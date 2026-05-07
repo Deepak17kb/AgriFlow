@@ -1,2 +1,17 @@
-# AgriFlow
-AgriFlow AI is an AI-powered agriculture dashboard for crop analysis, food security prediction, climate monitoring, and interactive yield forecasting using Machine Learning
+# 🌾 AgriFlow AI
+
+## Features
+- Country & Crop selection
+- Yield + production analysis
+- Food Security prediction (ML)
+- Forecast confidence
+- Interactive dashboard
+
+## Run
+
+pip install -r requirements.txt  
+streamlit run app.py  
+
+## Dataset
+Uses agriculture dataset with:
+Country||Crop format + yield, rainfall, FSI etc.
