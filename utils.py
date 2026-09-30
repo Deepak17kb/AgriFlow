@@ -4,6 +4,23 @@ import pandas as pd
 
 DATA_PATH = Path(__file__).with_name("data.csv")
 
+# ISO-3 codes for the map; names alone are ambiguous ("USA", "North Korea").
+ISO3 = {
+    "Afghanistan": "AFG", "Algeria": "DZA", "Argentina": "ARG", "Australia": "AUS", "Bangladesh": "BGD",
+    "Bolivia": "BOL", "Brazil": "BRA", "Bulgaria": "BGR", "Burkina Faso": "BFA", "Cambodia": "KHM",
+    "Canada": "CAN", "Chile": "CHL", "China": "CHN", "Colombia": "COL", "Ecuador": "ECU", "Egypt": "EGY",
+    "Ethiopia": "ETH", "France": "FRA", "Germany": "DEU", "Ghana": "GHA", "Hungary": "HUN", "India": "IND",
+    "Indonesia": "IDN", "Iran": "IRN", "Iraq": "IRQ", "Italy": "ITA", "Japan": "JPN", "Kazakhstan": "KAZ",
+    "Kenya": "KEN", "Kyrgyzstan": "KGZ", "Laos": "LAO", "Malawi": "MWI", "Malaysia": "MYS", "Mali": "MLI",
+    "Mexico": "MEX", "Mongolia": "MNG", "Morocco": "MAR", "Mozambique": "MOZ", "Myanmar": "MMR",
+    "Nepal": "NPL", "Netherlands": "NLD", "New Zealand": "NZL", "Nigeria": "NGA", "North Korea": "PRK",
+    "Pakistan": "PAK", "Papua New Guinea": "PNG", "Paraguay": "PRY", "Peru": "PER", "Philippines": "PHL",
+    "Poland": "POL", "Romania": "ROU", "Saudi Arabia": "SAU", "Senegal": "SEN", "South Korea": "KOR",
+    "Spain": "ESP", "Sri Lanka": "LKA", "Tajikistan": "TJK", "Tanzania": "TZA", "Thailand": "THA",
+    "Tunisia": "TUN", "Turkey": "TUR", "USA": "USA", "Uganda": "UGA", "Ukraine": "UKR",
+    "Uzbekistan": "UZB", "Venezuela": "VEN", "Vietnam": "VNM", "Zambia": "ZMB",
+}
+
 def load_data():
     df = pd.read_csv(DATA_PATH)
 

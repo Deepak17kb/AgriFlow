@@ -66,16 +66,20 @@ Built for agronomists, policy analysts, and food-security researchers who need *
 
 | Feature | Description |
 |---|---|
+| **Dark & Light Themes** | One-click theme switch in the header; the whole page fades between modes |
+| **Instant Updates** | No run button: every filter change re-renders the view, and only the open tab is built |
+| **Animated Charts** | Lines draw in, bars grow, and charts morph smoothly when the selection changes |
 | **ML Forecasting** | RandomForest estimates the probability that FSI rises by the next record |
-| **Yield Projections** | Linear yield trend with next-year and 3-year projections and a likely range |
-| **KPI Strip** | Yield, FSI, production, price and trade balance with change vs the previous record |
+| **Yield Projections** | Linear trend with a ±1 s.e. projection fan for next year and three years out |
+| **KPI Tiles** | Yield, FSI, production, price and trade balance with sparklines and change vs the previous record |
 | **Smart Alerts** | Auto-generated risk alerts — drought, loss rate, FSI decline, forecast direction |
-| **Climate Tab** | Rainfall, temperature, rainfall-vs-yield scatter and a climate profile |
-| **Economics Tab** | Production, price, profit margin and trade surplus/deficit charts |
-| **Crop Comparison** | Yield of two crops side by side, plus a metrics table |
-| **Data Tab** | The filtered records as a table, with CSV download |
-| **Shareable Links** | `?country=India&crop=Wheat` opens straight into that analysis |
-| **Responsive Layout** | Light, neutral theme that adapts from desktop down to phone width |
+| **Climate Tab** | Rainfall anomaly, temperature, rainfall-vs-yield, driver correlation matrix, climate profile |
+| **Economics Tab** | Production, price, profit margin, trade balance, trade waterfall and a harvest-loss Sankey |
+| **Benchmark Tab** | World map, country ranking, peer bubble chart (click to jump), percentile radar, animated timeline |
+| **Portfolio Tab** | Crop × year yield heatmap, yield momentum by crop and a production treemap |
+| **Compare & Data** | Two crops side by side with a radar profile; the filtered records with CSV download |
+| **Shareable Links** | `?country=India&crop=Wheat&theme=light&tab=Benchmark` reopens that exact view |
+| **Responsive Layout** | Adapts from wide desktop down to phone width |
 
 </div>
 
@@ -86,11 +90,13 @@ Built for agronomists, policy analysts, and food-security researchers who need *
 ```
 agriflow-ai/
 │
-├── app.py                 ← Streamlit entry point · UI, charts, alert engine
+├── app.py                 ← Streamlit entry point · layout, state, alert engine
+├── charts.py              ← Plotly figure builders for every chart, themed per mode
+├── ui.py                  ← Light/dark theme tokens, global CSS, animations, HTML helpers
 ├── model.py               ← Feature engineering + RandomForest training & predict
-├── utils.py               ← CSV loader with robust column-name normalization
+├── utils.py               ← CSV loader with column-name normalization, ISO-3 country codes
 ├── data.csv               ← 10,500+ row global agricultural dataset (2013-2024)
-├── .streamlit/config.toml ← Theme (colors, Inter font, radius) and toolbar settings
+├── .streamlit/config.toml ← Base theme, Inter font and toolbar settings
 └── requirements.txt       ← Python dependencies
 ```
 
@@ -191,12 +197,12 @@ treat the probability as a rough signal, not a calibrated one.
 ┌──────────────────────────────────────────────────────────────┐
 │  SIDEBAR                 │  MAIN PANEL                       │
 │  ────────────────────    │  ───────────────────────────────  │
-│  Country selector        │  Header · status chips            │
-│  Crop selector           │  KPI strip (5 metrics)            │
-│  Period (all / 5 / 3 yr) │  Outlook: FSI + 2 yield projections│
-│  Compare toggle          │  Tabs:                            │
-│  Run analysis button     │   Overview · Climate · Economics  │
-│                          │   Compare · Data                  │
+│  Country selector        │  Header · status chips · theme    │
+│  Crop selector           │  KPI tiles with sparklines        │
+│  Period (all / 5 / 3 yr) │  Outlook: FSI ring + 2 projections│
+│  Dataset summary         │  Tabs: Overview · Climate ·       │
+│                          │   Economics · Benchmark ·         │
+│                          │   Portfolio · Compare · Data      │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -230,9 +236,10 @@ FEATURES = ["Yield", "Production", "Rainfall", "Temperature"]
 **Add new data columns** — `utils.py` normalizes column names automatically.
 Match the expected aliases inside each block of `load_data()`.
 
-**Change theme colors** — base theme in `.streamlit/config.toml`; component tokens
-are CSS variables at the top of the `<style>` block in `app.py`, and chart colors
-are constants near the top of `app.py`. Primary green: `#1a7f4e`
+**Change theme colors** — both modes live in `THEMES` in `ui.py`: interface tokens
+become CSS variables, and the `c_*` keys color the charts. Accent green: `#2dd4a0`
+(dark) / `#0e9f6e` (light). Chart color pairs that share a plot were checked for
+color-vision deficiency, so re-check any pair you change.
 
 ---
 
