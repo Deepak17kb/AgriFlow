@@ -86,6 +86,12 @@ def signed_bars(years, values, t, pos_name, neg_name, unit, fmt=",.0f"):
     return fig
 
 
+def end_label(fig, x, y, text, t):
+    """Label the latest value just above its point, as in editorial charts."""
+    fig.add_annotation(x=x, y=y, text=f"<b>{text}</b>", showarrow=False, yshift=13,
+                       font=dict(family=SANS, size=11.5, color=t["ink"]))
+
+
 def _two_groups(stats, country):
     """(others, selected) rows, in that order."""
     mask = stats["Country"] == country
@@ -93,24 +99,26 @@ def _two_groups(stats, country):
 
 
 # ─────────────────────────── Overview ───────────────────────────
-def yield_fan(data, slope, intercept, projections, t):
+def yield_fan(data, slope, intercept, fan, t):
+    """Observed yield, the fitted trend, and a projection fan with 50% and 80% prediction ranges."""
     years = data["Year"]
     first, last = int(years.iloc[0]), int(years.iloc[-1])
-    (y1, p1, lo1, hi1), (y3, p3, lo3, hi3) = projections
-    fit_last = slope * last + intercept
+    xs = [int(x) for x in fan["years"]]
     fig = go.Figure()
-    fig.add_scatter(x=[last, y1, y3, y3, y1, last], y=[fit_last, hi1, hi3, lo3, lo1, fit_last], fill="toself",
-                    mode="lines", fillcolor=rgba(t["c_a"], 0.12), line=dict(width=0), name="Likely range",
-                    hoverinfo="skip")
-    fig.add_scatter(x=[first, last], y=[slope * first + intercept, fit_last], mode="lines", name="Trend",
-                    line=dict(color=t["c_trend"], width=1.5), hoverinfo="skip")
-    fig.add_scatter(x=[last, y1, y3], y=[fit_last, p1, p3], mode="lines", showlegend=False, hoverinfo="skip",
+    for lo, hi, name, alpha in [("lo80", "hi80", "80% range", 0.10), ("lo50", "hi50", "50% range", 0.20)]:
+        fig.add_scatter(x=xs + xs[::-1], y=list(fan[hi]) + list(fan[lo])[::-1], fill="toself", mode="lines",
+                        line=dict(width=0), fillcolor=rgba(t["c_a"], alpha), name=name, hoverinfo="skip")
+    fig.add_scatter(x=[first, last], y=[slope * first + intercept, slope * last + intercept], mode="lines",
+                    name="Trend", line=dict(color=t["c_trend"], width=1.5), hoverinfo="skip")
+    fig.add_scatter(x=xs, y=fan["mid"], mode="lines", showlegend=False, hoverinfo="skip",
                     line=dict(color=t["c_a"], width=1.5, dash="dot"))
-    fig.add_scatter(x=[y1, y3], y=[p1, p3], mode="markers", name="Projection", customdata=[[lo1, hi1], [lo3, hi3]],
-                    marker=dict(size=9, color=t["surface"], line=dict(color=t["c_a"], width=2)),
-                    hovertemplate="%{y:.2f} MT/ha · range %{customdata[0]:.2f}–%{customdata[1]:.2f}<extra>Projection</extra>")
+    fig.add_scatter(x=xs[1:], y=fan["mid"][1:], mode="markers", name="Projection",
+                    customdata=np.stack([fan["lo80"][1:], fan["hi80"][1:]], axis=-1),
+                    marker=dict(size=8, color=t["surface"], line=dict(color=t["c_a"], width=2)),
+                    hovertemplate="%{y:.2f} MT/ha · 80% range %{customdata[0]:.2f}–%{customdata[1]:.2f}<extra>Projection</extra>")
     fig.add_trace(line(years, data["Yield"], "Yield", t["c_a"], t, "MT/ha"))
-    return style(fig, t, height=310, legend=True, years=np.array([first, y3]))
+    end_label(fig, last, data["Yield"].iloc[-1], f"{data['Yield'].iloc[-1]:.2f}", t)
+    return style(fig, t, height=320, legend=True, years=np.array([first, xs[-1]]))
 
 
 def fsi_bands(data, t):
@@ -121,6 +129,7 @@ def fsi_bands(data, t):
         fig.add_annotation(xref="paper", x=1.01, xanchor="left", y=(y0 + y1) / 2, text=label, showarrow=False,
                            font=dict(family=SANS, size=11, color=t["muted"]))
     fig.add_trace(line(data["Year"], data["FSI"], "FSI", t["c_violet"], t, "", ".0f"))
+    end_label(fig, data["Year"].iloc[-1], data["FSI"].iloc[-1], f"{data['FSI'].iloc[-1]:.0f}", t)
     style(fig, t, height=290, years=data["Year"], y_range=[0, 100], margin=dict(l=4, r=70, t=8, b=4))
     fig.update_yaxes(dtick=25)
     return fig
@@ -249,7 +258,7 @@ def correlation_matrix(crop_df, t):
 # ─────────────────────────── Economics ───────────────────────────
 def indexed_trends(data, t):
     """Yield, production, price and FSI on one axis, each indexed to its first record."""
-    series = [("Yield", "Yield", t["c_a"], ".2f", "MT/ha"), ("Production", "Production", t["c_b"], ",.0f", "MT"),
+    series = [("Yield", "Yield", t["c_a"], ".2f", "MT/ha"), ("Production", "Production", t["c_b"], ",.0f", "kt"),
               ("Price", "Price", t["c_orange"], ",.0f", "USD/MT"), ("FSI", "Food security", t["c_violet"], ".0f", "")]
     fig = go.Figure()
     values = []
@@ -277,24 +286,78 @@ def indexed_trends(data, t):
     return fig
 
 
-def trade_waterfall(latest, t):
-    exports, imports = float(latest.get("export_usd_m", 0)), float(latest.get("import_usd_m", 0))
+def kt(v):
+    """Thousand tonnes as a short label."""
+    return f"{v / 1000:,.2f} Mt" if abs(v) >= 1000 else f"{v:,.0f} kt"
 
-    def money(v):
-        sign = "−" if v < 0 else ""
-        return f"{sign}${abs(v) / 1000:.1f}B" if abs(v) >= 1000 else f"{sign}${abs(v):,.0f}M"
 
-    net = exports - imports
+def production_decomposition(data, t):
+    """Split the change in production between the first and latest record into yield and area effects.
+
+    Production (kt) = yield (t/ha) x area (ha) / 1000, so the change is exactly
+    yield effect + area effect + their interaction.
+    """
+    f, l = data.iloc[0], data.iloc[-1]
+    y0, y1, a0, a1 = f["Yield"], l["Yield"], f["Area"], l["Area"]
+    p0, p1 = y0 * a0 / 1000, y1 * a1 / 1000
+    effects = [(y1 - y0) * a0 / 1000, (a1 - a0) * y0 / 1000, (y1 - y0) * (a1 - a0) / 1000]
+    labels = [str(int(f["Year"])), "Yield effect", "Area effect", "Both together", str(int(l["Year"]))]
+
+    def signed(v):
+        return ("+" if v >= 0 else "−") + kt(abs(v))
+
     fig = go.Figure(go.Waterfall(
-        x=["Exports", "Imports", "Net balance"], y=[exports, -imports, 0], measure=["relative", "relative", "total"],
-        increasing=dict(marker=dict(color=t["c_b"])), decreasing=dict(marker=dict(color=t["c_red"])),
-        totals=dict(marker=dict(color=t["c_trend"])), connector=dict(line=dict(color=t["c_axis"], width=1)),
-        text=[money(exports), money(-imports), money(net)], textposition="outside", cliponaxis=False,
+        x=labels, measure=["absolute", "relative", "relative", "relative", "total"], y=[p0, *effects, 0],
+        text=[kt(p0), *[signed(e) for e in effects], kt(p1)], textposition="outside", cliponaxis=False,
         textfont=dict(family=SANS, size=11.5, color=t["ink_2"]),
+        increasing=dict(marker=dict(color=t["c_b"])), decreasing=dict(marker=dict(color=t["c_red"])),
+        totals=dict(marker=dict(color=t["c_a"])), connector=dict(line=dict(color=t["c_axis"], width=1)),
         hovertemplate="%{x}: %{text}<extra></extra>",
     ))
-    style(fig, t, height=290, hovermode="closest", zero_line=True)
-    fig.update_yaxes(title_text="USD M")
+    style(fig, t, height=310, hovermode="closest")
+    fig.update_xaxes(type="category")  # "2013"/"2022" labels must not turn the axis numeric
+    fig.update_yaxes(title_text="Thousand tonnes", rangemode="tozero")
+    return fig
+
+
+def area_yield_path(data, t):
+    """Year-by-year path through harvested area and yield, drawn over curves of equal production."""
+    x = data["Area"] / 1000
+    y = data["Yield"]
+    fig = go.Figure()
+    # Production (kt) = yield x area (thousand ha), so a production level P is the curve yield = P / area.
+    x_lo, x_hi = x.min() * 0.85, x.max() * 1.1
+    y_pad = (y.max() - y.min()) * 0.2 or y.max() * 0.1
+    y_lo, y_hi = max(y.min() - y_pad, 0), y.max() + y_pad
+    prod = x * y
+    levels = sorted({float(f"{v:.2g}") for v in np.geomspace(max(prod.min(), 1e-6), prod.max(), 3)})
+    xs = np.linspace(x_lo, x_hi, 80)
+    for p in levels:
+        fig.add_scatter(x=xs, y=p / xs, mode="lines", line=dict(color=t["c_band2"], width=1),
+                        hoverinfo="skip", showlegend=False)
+        # Label each curve where it leaves the plot: the top edge if it crosses it, else the right edge.
+        x_top = p / y_hi
+        if x_lo <= x_top <= x_hi:
+            fig.add_annotation(x=x_top, y=y_hi, text=kt(p), showarrow=False, yanchor="bottom", yshift=1,
+                               font=dict(family=SANS, size=10.5, color=t["subtle"]))
+        elif y_lo <= p / x_hi <= y_hi:
+            fig.add_annotation(x=x_hi, y=p / x_hi, text=kt(p), showarrow=False, xanchor="left", xshift=4,
+                               font=dict(family=SANS, size=10.5, color=t["subtle"]))
+    fig.add_scatter(
+        x=x, y=y, mode="lines+markers", showlegend=False,
+        line=dict(color=t["c_trend"], width=1.5),
+        marker=dict(size=9, color=data["Year"], colorscale=t["seq"][1:], line=dict(color=t["surface"], width=1.5)),
+        customdata=np.stack([data["Year"], data["Production"]], axis=-1),
+        hovertemplate="<b>%{customdata[0]}</b><br>Area %{x:,.0f} thousand ha<br>Yield %{y:.2f} MT/ha"
+                      "<br>Production %{customdata[1]:,.0f} kt<extra></extra>",
+    )
+    for i, bold in [(0, False), (len(data) - 1, True)]:
+        year = int(data["Year"].iloc[i])
+        fig.add_annotation(x=x.iloc[i], y=y.iloc[i], text=f"<b>{year}</b>" if bold else str(year), showarrow=False,
+                           yshift=13, font=dict(family=SANS, size=11, color=t["ink_2"]))
+    style(fig, t, height=310, hovermode="closest", margin=dict(l=4, r=60, t=22, b=4))
+    fig.update_xaxes(title_text="Harvested area (thousand ha)", range=[x_lo, x_hi])
+    fig.update_yaxes(title_text="Yield (MT/ha)", range=[y_lo, y_hi])
     return fig
 
 
@@ -306,7 +369,7 @@ def harvest_sankey(latest, t):
     wasted = min(prod * waste, market)
     used = market - wasted
     # The middle node stays unlabelled: its label would collide with the consumed share beside it.
-    labels = [f"Harvest · {prod:,.0f} MT", f"Post-harvest loss · {phl * 100:.1f}%", "",
+    labels = [f"Harvest · {kt(prod)}", f"Post-harvest loss · {phl * 100:.1f}%", "",
               f"Food waste · {waste * 100:.1f}%", f"Consumed / used · {used / prod * 100 if prod else 0:.1f}%"]
     colors = [t["c_a"], t["c_red"], t["c_b"], t["c_orange"], t["c_a"]]
     target = [1, 2, 3, 4]
@@ -314,10 +377,10 @@ def harvest_sankey(latest, t):
         arrangement="snap",
         node=dict(label=labels, color=colors, pad=26, thickness=12, line=dict(width=0),
                   customdata=["Harvest", "Post-harvest loss", "Reaches market", "Food waste", "Consumed / used"],
-                  hovertemplate="%{customdata}<br>%{value:,.0f} MT<extra></extra>"),
+                  hovertemplate="%{customdata}<br>%{value:,.0f} kt<extra></extra>"),
         link=dict(source=[0, 0, 2, 2], target=target, value=[lost, market, wasted, used],
                   color=[rgba(colors[i], 0.22) for i in target],
-                  hovertemplate="%{source.customdata} → %{target.customdata}<br>%{value:,.0f} MT<extra></extra>"),
+                  hovertemplate="%{source.customdata} → %{target.customdata}<br>%{value:,.0f} kt<extra></extra>"),
         textfont=dict(family=SANS, size=12, color=t["ink"]),
     ))
     fig.update_layout(height=290, margin=dict(l=4, r=4, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)",
@@ -406,7 +469,7 @@ def peer_scatter(stats, selected, t):
                         color=t["c_a"] if is_sel else rgba(t["c_peer"], 0.85),
                         line=dict(color=t["surface"], width=1)),
             hovertemplate="<b>%{customdata[0]}</b> · %{customdata[1]}<br>Yield %{x:.2f} MT/ha · FSI %{y:.0f}"
-                          "<br>Production %{customdata[2]:,.0f} MT<extra></extra>",
+                          "<br>Production %{customdata[2]:,.0f} kt<extra></extra>",
         )
     fig.add_vline(x=stats["Yield"].median(), line=dict(color=t["c_axis"], width=1))
     fig.add_hline(y=stats["FSI"].median(), line=dict(color=t["c_axis"], width=1))
@@ -528,8 +591,8 @@ def portfolio_treemap(country_df, t):
                      color="Margin", color_continuous_scale=t["seq"], template="none")
     fig.update_traces(
         marker=dict(line=dict(color=t["surface"], width=2), cornerradius=4), root_color="rgba(0,0,0,0)",
-        texttemplate="<b>%{label}</b><br>%{value:,.0f} MT", textfont=dict(family=SANS, size=12.5),
-        hovertemplate="<b>%{label}</b><br>Avg production %{value:,.0f} MT<br>Avg margin %{color:.1f}%<extra></extra>",
+        texttemplate="<b>%{label}</b><br>%{value:,.0f} kt", textfont=dict(family=SANS, size=12.5),
+        hovertemplate="<b>%{label}</b><br>Avg production %{value:,.0f} kt<br>Avg margin %{color:.1f}%<extra></extra>",
         pathbar_visible=False,
     )
     fig.update_layout(
@@ -543,21 +606,3 @@ def portfolio_treemap(country_df, t):
     return fig
 
 
-def production_pareto(country_df, selected_crop, t):
-    """Crops by share of average production, with the cumulative share on the same percent axis."""
-    avg = country_df.groupby("Crop")["Production"].mean().sort_values(ascending=False)
-    share = avg / avg.sum() * 100
-    fig = go.Figure()
-    fig.add_bar(x=share.index, y=share.values, name="Share of production",
-                marker_color=[t["c_a"] if c == selected_crop else t["c_peer"] for c in share.index],
-                hovertemplate="%{x}: %{y:.1f}% of production<extra></extra>")
-    fig.add_scatter(x=share.index, y=share.cumsum().values, mode="lines+markers", name="Cumulative share",
-                    line=dict(color=t["ink_2"], width=1.5), marker=dict(size=5, color=t["ink_2"]),
-                    hovertemplate="Top crops through %{x}: %{y:.0f}%<extra></extra>")
-    fig.add_hline(y=80, line=dict(color=t["c_axis"], width=1))
-    fig.add_annotation(xref="paper", x=1, xanchor="right", y=80, yshift=9, showarrow=False, text="80%",
-                       font=dict(family=SANS, size=11, color=t["muted"]))
-    style(fig, t, height=370, legend=True, hovermode="closest")
-    fig.update_yaxes(range=[0, 104], ticksuffix="%")
-    fig.update_xaxes(tickangle=-40, tickfont=dict(family=SANS, size=11, color=t["ink_2"]))
-    return fig

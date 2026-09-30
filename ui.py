@@ -64,13 +64,19 @@ def icon(name, size=16):
     return _SVG.format(s=size, p=_PATHS[name])
 
 
-def card(key, title, subtitle=None):
-    """A bordered panel for one chart or list."""
+def card(key, title, subtitle=None, info=None):
+    """A bordered panel for one chart or list; `info` is a hover note on how the chart is built."""
     box = st.container(key=f"card-{key}")
     with box:
         sub = f'<div class="af-card-sub">{subtitle}</div>' if subtitle else ""
-        html(f'<div><div class="af-card-title">{title}</div>{sub}</div>')
+        tip = f'<span class="af-info" title="{info}">{icon("info", 15)}</span>' if info else ""
+        html(f'<div class="af-card-head"><div><div class="af-card-title">{title}</div>{sub}</div>{tip}</div>')
     return box
+
+
+def group(title, subtitle=""):
+    """A light heading that groups the cards below it inside a tab."""
+    html(f'<div class="af-group"><b>{title}</b><span>{subtitle}</span></div>')
 
 
 def callout(text, kind="info"):
@@ -160,8 +166,15 @@ button[data-testid^="stBaseButton-segmented_control"] p, button[data-testid^="st
   padding: 16px 18px 10px; box-shadow: var(--shadow); animation: af-fade .35s ease both;
   transition: background-color .3s ease, border-color .3s ease; }
 [data-testid="stColumn"] > [data-testid="stVerticalBlock"] > [data-testid="stLayoutWrapper"]:has(> [class*="st-key-card"]) { flex: 1 1 auto; }
+.af-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .af-card-title { font-size: 14px; font-weight: 600; color: var(--ink); }
-.af-card-sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.af-card-sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; line-height: 1.45; }
+.af-info { flex: none; color: var(--subtle); cursor: help; line-height: 0; margin-top: 2px; transition: color .15s ease; }
+.af-info:hover { color: var(--ink-2); }
+.af-group { display: flex; align-items: baseline; gap: 10px; margin: 8px 0 -2px; }
+.af-group b { font-size: 13px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+.af-group span { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.af-group::after { content: ""; flex: 1; height: 1px; background: var(--border); align-self: center; }
 
 /* ---------- Header ---------- */
 .af-eyebrow { font-size: 13px; font-weight: 500; color: var(--muted); }
@@ -175,9 +188,10 @@ button[data-testid^="stBaseButton-segmented_control"] p, button[data-testid^="st
 .af-dot.good { background: var(--good); } .af-dot.warn { background: var(--warn); } .af-dot.bad { background: var(--bad); }
 
 /* ---------- KPI tiles ---------- */
-.af-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-top: 4px; }
-.af-kpi { background-color: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 14px 16px 10px; box-shadow: var(--shadow); animation: af-fade .35s ease both; transition: background-color .3s ease, border-color .3s ease; }
+/* One joined strip: the 1px grid gap over a border-coloured background draws the dividers */
+.af-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; margin-top: 6px; background: var(--border);
+  border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); animation: af-fade .35s ease both; }
+.af-kpi { background-color: var(--surface); padding: 14px 18px 10px; transition: background-color .3s ease; }
 .af-kpi-label { font-size: 12.5px; font-weight: 500; color: var(--muted); }
 .af-kpi-value { font-size: 24px; font-weight: 600; letter-spacing: -.02em; color: var(--ink); margin-top: 6px; line-height: 1.2; white-space: nowrap; }
 .af-kpi-value small { font-size: 12.5px; font-weight: 400; color: var(--muted); margin-left: 4px; letter-spacing: 0; }
@@ -187,8 +201,10 @@ button[data-testid^="stBaseButton-segmented_control"] p, button[data-testid^="st
 .af-spark { display: block; width: 100%; height: 32px; margin-top: 8px; }
 .af-spark .ln { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .af-spark .ar { fill: var(--accent); opacity: .07; }
-@media (max-width: 1100px) { .af-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 640px) { .af-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .af-kpi:last-child { grid-column: span 2; }
+@media (max-width: 1100px) { .af-kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .af-kpi { grid-column: span 2; } .af-kpi:nth-child(n+4) { grid-column: span 3; } }
+@media (max-width: 640px) { .af-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .af-kpi, .af-kpi:nth-child(n+4) { grid-column: span 1; } .af-kpi:last-child { grid-column: span 2; }
   .af-title { font-size: 24px; } [data-testid="stMainBlockContainer"] { padding-top: 3.2rem; } }
 
 /* ---------- Outlook ---------- */

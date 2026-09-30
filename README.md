@@ -10,7 +10,7 @@ country compares with every other producer.
 
 **[Live dashboard](https://agriflowai.streamlit.app/)** · [Quick start](#quick-start) · [How it works](#how-it-works)
 
-![AgriFlow dashboard showing wheat in India: KPI tiles, food security outlook, yield projections and yield trajectory](site/preview.webp)
+![AgriFlow dashboard in the dark theme, showing wheat in India: KPI tiles, food security outlook, yield projections and yield trajectory](site/preview-dark.webp)
 
 ## Features
 
@@ -24,11 +24,11 @@ country compares with every other producer.
 
 | View | What it shows |
 |---|---|
-| Overview | Yield trajectory with projection range, FSI by status band, the latest year against its own history, farm operations against other countries, risk alerts |
+| Overview | Yield trajectory with 50% and 80% projection ranges, FSI by status band, the latest year against its own history, farm operations against other countries, risk alerts |
 | Climate | Rainfall anomalies, temperature, rainfall vs yield, correlation matrix of the main drivers |
-| Economics | Indexed trends, production, price, profit margin, trade balance, trade waterfall, harvest-loss Sankey |
+| Economics | Indexed trends, production change split into yield and area effects, area-and-yield path over equal-production curves, price, profit margin, trade balance, harvest-loss Sankey |
 | Benchmark | World map, country ranking, percentile bands against all producers, yield vs food security, yield vs stability, percentile profile |
-| Portfolio | Crop-by-year yield heatmap, yield momentum by crop, production treemap and Pareto |
+| Portfolio | Crop-by-year yield heatmap, yield momentum by crop, production treemap |
 | Compare | Two crops of the same country side by side, with a percentile comparison |
 | Data | The filtered records, downloadable as CSV |
 
@@ -63,7 +63,12 @@ Each country and crop has only 2–11 year-to-year changes, so treat the probabi
 calibrated forecast.
 
 **Yield projections.** A least-squares linear trend over the selected period, projected one and three years past
-the latest record. The range is ±1 standard error of the prediction.
+the latest record, with 50% and 80% prediction ranges from a t-distribution (so they widen when there are few
+records).
+
+**Production decomposition.** In `data.csv`, production is in thousand tonnes and equals yield × harvested area
+÷ 1,000. The change between the first and latest record therefore splits exactly into a yield effect, an area
+effect and their interaction.
 
 **Coverage rules.** Only crops with at least 3 records are listed for a country, and the 5- and 3-year periods
 appear only when they still contain 3 records, so every selection can be analysed.
@@ -88,7 +93,7 @@ A chance of an FSI rise at or above 65% is shown as a positive note.
 | Years | 2013–2024 |
 | Countries | 68, across 10 regions |
 | Crops | Barley, Cassava, Cocoa, Coffee, Cotton, Fruits, Groundnut, Maize, Millet, Oilseeds, Potato, Pulses, Rapeseed, Rice, Sorghum, Soybean, Sugarcane, Sunflower, Sweet Potato, Tea, Vegetables, Wheat |
-| Main fields | Yield, production, food security index and status, drought risk, rainfall, temperature, price, exports, imports, profit margin, post-harvest loss, food waste, irrigation, mechanization, soil health |
+| Main fields | Yield (t/ha), harvested area (ha), production (thousand tonnes), food security index and status, drought risk, rainfall, temperature, price, exports, imports, profit margin, post-harvest loss, food waste, irrigation, mechanization, soil health |
 
 ## Project structure
 

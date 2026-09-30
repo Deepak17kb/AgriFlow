@@ -59,7 +59,15 @@ def load_data():
     else:
         df["Yield"] = 0
 
-    # ---------- PRODUCTION ----------
+    # ---------- HARVESTED AREA (ha) ----------
+    for col in ["hectares_harvested", "area_harvested_ha", "area_ha"]:  # not "area": FAO files use it for country
+        if col in df.columns:
+            df["Area"] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            break
+    else:
+        df["Area"] = 0
+
+    # ---------- PRODUCTION (thousand tonnes: yield x area / 1000 in data.csv) ----------
     for col in ["production_mt", "production", "prod"]:
         if col in df.columns:
             df["Production"] = pd.to_numeric(df[col], errors="coerce").fillna(0)

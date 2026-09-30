@@ -3,10 +3,11 @@ import datetime
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+from scipy import stats as sps
 
 import charts
 from model import predict, prepare_features, train_model
-from ui import THEMES, callout, card, html, icon, sparkline, theme_css
+from ui import THEMES, callout, card, group, html, icon, sparkline, theme_css
 from utils import ISO3, load_data
 
 st.set_page_config(page_title="AgriFlow AI", layout="wide", page_icon=":material/eco:")
@@ -91,21 +92,22 @@ def forecast(country, crop, start_year):
     return pred, p_up, model is not None, int(data_model["target"].notna().sum())
 
 
-def yield_trend(data, horizons=(1, 3)):
-    """Linear yield trend and projections, each with a ±1 standard-error range."""
+def yield_trend(data, horizon=3):
+    """Least-squares yield trend with 50% and 80% prediction ranges from the latest record to `horizon` years on."""
     x = data["Year"].to_numpy(float)
     y = data["Yield"].to_numpy(float)
     slope, intercept = np.polyfit(x, y, 1)
-    resid = y - (slope * x + intercept)
-    s = np.sqrt((resid ** 2).sum() / max(len(x) - 2, 1))
-    sxx = ((x - x.mean()) ** 2).sum()
-    projections = []
-    for h in horizons:
-        x0 = x[-1] + h
-        mid = slope * x0 + intercept
-        se = s * np.sqrt(1 + 1 / len(x) + (x0 - x.mean()) ** 2 / sxx)
-        projections.append((int(x0), max(mid, 0.0), max(mid - se, 0.0), max(mid + se, 0.0)))
-    return slope, intercept, projections
+    dof = max(len(x) - 2, 1)
+    s = np.sqrt(((y - (slope * x + intercept)) ** 2).sum() / dof)
+    xs = np.arange(x[-1], x[-1] + horizon + 1)
+    mid = slope * xs + intercept
+    se = s * np.sqrt(1 + 1 / len(x) + (xs - x.mean()) ** 2 / ((x - x.mean()) ** 2).sum())
+    t50, t80 = sps.t.ppf(0.75, dof), sps.t.ppf(0.90, dof)
+    fan = {"years": xs.astype(int), "mid": np.maximum(mid, 0),
+           "lo50": np.maximum(mid - t50 * se, 0), "hi50": mid + t50 * se,
+           "lo80": np.maximum(mid - t80 * se, 0), "hi80": mid + t80 * se}
+    projections = [(int(xs[h]), fan["mid"][h], fan["lo80"][h], fan["hi80"][h]) for h in (1, horizon)]
+    return slope, intercept, fan, projections
 
 
 # ─────────────────────────── FORMATTING ───────────────────────────
@@ -122,6 +124,11 @@ def money_m(v):
     """USD millions for Markdown; '&#36;' keeps '$' pairs from being read as LaTeX."""
     sign, a = ("−" if v < 0 else ""), abs(v)
     return f"{sign}&#36;{a / 1000:.2f}B" if a >= 1000 else f"{sign}&#36;{a:,.0f}M"
+
+
+def production_label(v):
+    """(value, unit) for production held in thousand tonnes."""
+    return (f"{v / 1000:,.2f}", "Mt") if abs(v) >= 1000 else (f"{v:,.0f}", "kt")
 
 
 def sentence(text):
@@ -217,7 +224,7 @@ year_val, prev_year = int(latest["Year"]), int(prev["Year"])
 years = data["Year"]
 
 pred, p_up, used_model, n_outcomes = forecast(country, crop, start_year)
-slope, intercept, projections = yield_trend(data)
+slope, intercept, fan, projections = yield_trend(data)
 avg_yield = data["Yield"].mean()
 loss_rate = data["LossRate"].mean()
 profit_margin = data["ProfitMargin"].mean()
@@ -260,7 +267,7 @@ trade_change = latest["TradeBalance"] - prev["TradeBalance"]
 kpis = [
     ("Yield", f"{latest['Yield']:.2f}", "MT/ha", pct(latest["Yield"], prev["Yield"]), data["Yield"]),
     ("Food security index", f"{latest['FSI']:.0f}", "/ 100", delta(fsi_change, f"{abs(fsi_change):.0f} pts"), data["FSI"]),
-    ("Production", compact(latest["Production"]), "MT", pct(latest["Production"], prev["Production"]), data["Production"]),
+    ("Production", *production_label(latest["Production"]), pct(latest["Production"], prev["Production"]), data["Production"]),
     ("Price", f"&#36;{latest['Price']:,.0f}", "/ MT", pct(latest["Price"], prev["Price"], None), data["Price"]),
     ("Trade balance", money_m(latest["TradeBalance"]), "", delta(trade_change, money_m(abs(trade_change))),
      data["TradeBalance"]),
@@ -301,7 +308,7 @@ def projection_panel(year, mid, lo, hi):
             <i class="dot now" style="left:{pos(now):.1f}%"></i>
             <i class="dot proj" style="left:{pos(mid):.1f}%"></i>
         </div>
-        <div class="af-scale"><span>Range <b>{lo:.2f}–{hi:.2f}</b></span><span>Now <b>{now:.2f}</b></span></div>
+        <div class="af-scale"><span>80% range <b>{lo:.2f}–{hi:.2f}</b></span><span>Now <b>{now:.2f}</b></span></div>
         <div class="af-panel-foot">Linear trend, {trend_word} {slope:+.3f} MT/ha per year.</div>
     </div>"""
 
@@ -356,6 +363,37 @@ yield_vs_avg = (latest["Yield"] - avg_yield) / avg_yield * 100 if avg_yield else
 best, worst = data.loc[data["Yield"].idxmax()], data.loc[data["Yield"].idxmin()]
 rain_r = data["Rainfall"].corr(data["Yield"]) if data["Rainfall"].nunique() > 1 else float("nan")
 
+# ─────────────────────────── TAKEAWAYS ───────────────────────────
+z_rows = []
+for col, label in [("Yield", "yield"), ("FSI", "food security"), ("Production", "production"), ("Price", "price"),
+                   ("ProfitMargin", "profit margin"), ("LossRate", "post-harvest loss"), ("Rainfall", "rainfall"),
+                   ("Temperature", "temperature")]:
+    sd = data[col].std(ddof=1)
+    if sd and np.isfinite(sd):
+        z_rows.append(((data[col].iloc[-1] - data[col].mean()) / sd, label))
+z_top = max(z_rows, key=lambda r: abs(r[0])) if z_rows else None
+z_takeaway = (f"Largest deviation: {z_top[1]} at {z_top[0]:+.1f} standard deviations" if z_top
+              else f"Latest record against the {start_year}–{year_val} average")
+
+bench = crop_stats(crop)
+ops_row = bench.loc[bench["Country"] == country].iloc[0]
+below = [label for col, label, better_high in [("Mechanization", "mechanization", True), ("Irrigation", "irrigation", True),
+                                               ("SoilHealth", "soil health", True), ("LossRate", "post-harvest loss", False)]
+         if (ops_row[col] < bench[col].median()) == better_high and ops_row[col] != bench[col].median()]
+ops_takeaway = (f"Behind the median country on {', '.join(below)}" if below
+                else f"At or ahead of the median country on every measure")
+
+first_rec, last_rec = data.iloc[0], data.iloc[-1]
+prod_change = (last_rec["Production"] / first_rec["Production"] - 1) * 100 if first_rec["Production"] else 0
+yield_eff = (last_rec["Yield"] - first_rec["Yield"]) * first_rec["Area"] / 1000
+area_eff = (last_rec["Area"] - first_rec["Area"]) * first_rec["Yield"] / 1000
+driver = "yield" if abs(yield_eff) >= abs(area_eff) else "harvested area"
+decomp_takeaway = (f"Production {prod_change:+.0f}% from {int(first_rec['Year'])} to {year_val}, "
+                   f"driven mostly by {driver}")
+area_pct = (last_rec["Area"] / first_rec["Area"] - 1) * 100 if first_rec["Area"] else 0
+yield_pct = (last_rec["Yield"] / first_rec["Yield"] - 1) * 100 if first_rec["Yield"] else 0
+path_takeaway = f"Area {area_pct:+.0f}% and yield {yield_pct:+.0f}% between {int(first_rec['Year'])} and {year_val}"
+
 # ─────────────────────────── TABS ───────────────────────────
 st.write("")
 tabs = st.tabs(TABS, key="tab", on_change="rerun", default=st.session_state.start_tab)
@@ -366,8 +404,12 @@ if tab["Overview"].open:
     with tab["Overview"]:
         left, right = st.columns([2, 1], gap="medium")
         with left:
-            with card("yield", "Yield trajectory", "MT per hectare, with linear trend and a ±1 s.e. projection range"):
-                charts.show(charts.yield_fan(data, slope, intercept, projections, t), "c-yield")
+            with card("yield", "Yield trajectory",
+                      f"Trend {slope:+.3f} MT/ha per year · {y1} projected at {p1:.2f} MT/ha "
+                      f"(80% range {lo1:.2f}–{hi1:.2f})",
+                      info="Least-squares linear trend over the selected period. Shaded bands are 50% and 80% "
+                           "prediction ranges from a t-distribution, so they widen with fewer records."):
+                charts.show(charts.yield_fan(data, slope, intercept, fan, t), "c-yield")
         with right:
             with card("alerts", "Risk alerts", f"{len(alerts)} active for the latest record, {year_val}"):
                 html("".join(
@@ -377,16 +419,22 @@ if tab["Overview"].open:
                     for tone, title, sev, body in alerts))
         left, right = st.columns([2, 1], gap="medium")
         with left:
-            with card("fsi", "Food security index", "Score out of 100, shaded by status band"):
+            with card("fsi", "Food security index",
+                      f"{latest['FSI']:.0f} in {year_val}, {sentence(fs_status).lower()} · "
+                      f"{'up' if fsi_change >= 0 else 'down'} {abs(fsi_change):.0f} pts on {prev_year}",
+                      info="Bands follow the status labels in the data: insecure below 35, at risk 35–49, "
+                           "moderate 50–69, secure 70 and above."):
                 charts.show(charts.fsi_bands(data, t), "c-fsi")
         with right:
-            with card("z", f"How {year_val} compares", f"Latest record against the {start_year}–{year_val} average"):
+            with card("z", f"How {year_val} compares", z_takeaway,
+                      info=f"Each bar is the latest value minus the {start_year}–{year_val} average, divided by the "
+                           "standard deviation over the same years."):
                 charts.show(charts.latest_vs_history(data, t), "c-z")
         left, right = st.columns([2, 1], gap="medium")
         with left:
-            with card("bullets", "Farm operations benchmark",
-                      f"Bar: {country}'s average · tick: median country · shading: middle 50% and full range "
-                      f"of countries growing {crop.lower()}"):
+            with card("bullets", "Farm operations benchmark", ops_takeaway,
+                      info=f"Bar: {country}'s average over all years. Tick: median country. Dark shading: middle 50% "
+                           f"of countries growing {crop.lower()}; light shading: full range."):
                 charts.show(charts.bullets(crop_stats(crop), country, t), "c-bullets")
         with right:
             with card("insights", "Insights", f"{crop} in {country}, {start_year}–{year_val}"):
@@ -431,32 +479,43 @@ if tab["Climate"].open:
 
 if tab["Economics"].open:
     with tab["Economics"]:
-        with card("indexed", "Indexed trends", f"Each series relative to its {start_year} value"):
+        with card("indexed", "Indexed trends", f"Each series relative to its {start_year} value",
+                  info="Index = value / first value in the period x 100. A log scale is used when the series "
+                       "spread more than twelvefold."):
             charts.show(charts.indexed_trends(data, t), "c-indexed")
+
+        group("Production", "What drove the change in output")
         c1, c2 = st.columns(2, gap="medium")
         with c1:
-            with card("prod", "Production", "Metric tonnes per year"):
-                charts.show(charts.style(go.Figure(charts.bars(years, data["Production"], "Production", t["c_a"], "MT")),
-                                         t, years=years), "c-prod")
+            with card("decomp", "Where the production change came from", decomp_takeaway,
+                      info="Production = yield x harvested area. The change between the first and latest record "
+                           "splits exactly into a yield effect (yield change at the old area), an area effect "
+                           "(area change at the old yield) and the two together."):
+                charts.show(charts.production_decomposition(data, t), "c-decomp")
         with c2:
+            with card("path", "Area and yield, year by year", path_takeaway,
+                      info="Each point is one year; later years are darker. Grey curves mark equal production, "
+                           "so moving across them means output changed."):
+                charts.show(charts.area_yield_path(data, t), "c-path")
+
+        group("Prices and trade", "Returns to farmers and the external balance")
+        c1, c2 = st.columns(2, gap="medium")
+        with c1:
             with card("price", "Price", "USD per metric tonne"):
                 charts.show(charts.style(go.Figure(charts.area(years, data["Price"], "Price", t["c_a"], t, "USD/MT")),
                                          t, years=years), "c-price")
-        c1, c2 = st.columns(2, gap="medium")
-        with c1:
+        with c2:
             with card("margin", "Profit margin", "Percent of revenue"):
                 fig = charts.signed_bars(years, data["ProfitMargin"], t, "Profit", "Loss", "%", ".1f")
                 charts.show(charts.style(fig, t, legend=True, years=years, zero_line=True), "c-margin")
-        with c2:
+        c1, c2 = st.columns(2, gap="medium")
+        with c1:
             with card("trade", "Trade balance", "Exports minus imports, USD millions"):
                 fig = charts.signed_bars(years, data["TradeBalance"], t, "Surplus", "Deficit", "USD M")
                 charts.show(charts.style(fig, t, legend=True, years=years, zero_line=True), "c-trade")
-        c1, c2 = st.columns(2, gap="medium")
-        with c1:
-            with card("waterfall", "Trade flows", f"Exports, imports and the net balance in {year_val}"):
-                charts.show(charts.trade_waterfall(latest, t), "c-waterfall")
         with c2:
-            with card("sankey", "Where the harvest goes", f"Losses along the supply chain, {year_val}"):
+            with card("sankey", "Where the harvest goes", f"Losses along the supply chain, {year_val}",
+                      info="Post-harvest loss and food waste as shares of production in the latest record."):
                 charts.show(charts.harvest_sankey(latest, t), "c-sankey")
 
 if tab["Benchmark"].open:
@@ -525,13 +584,8 @@ if tab["Portfolio"].open:
         with right:
             with card("trends", "Yield momentum", "Linear trend in yield, percent per year"):
                 charts.show(charts.crop_trends(crow, crops, crop, t), "c-trends")
-        left, right = st.columns(2, gap="medium")
-        with left:
-            with card("tree", "Production mix", "Tile size is average production · colour is average profit margin"):
-                charts.show(charts.portfolio_treemap(crow, t), f"c-tree-{mode}")
-        with right:
-            with card("pareto", "Production concentration", "Share of average production by crop, with the cumulative total"):
-                charts.show(charts.production_pareto(crow, crop, t), "c-pareto")
+        with card("tree", "Production mix", "Tile size is average production · colour is average profit margin"):
+            charts.show(charts.portfolio_treemap(crow, t), f"c-tree-{mode}")
 
 if tab["Compare"].open:
     with tab["Compare"]:
@@ -585,7 +639,7 @@ if tab["Compare"].open:
 
 if tab["Data"].open:
     with tab["Data"]:
-        columns = [("Year", "Year", "{:.0f}"), ("Yield", "Yield MT/ha", "{:.2f}"), ("Production", "Production MT", "{:,.0f}"),
+        columns = [("Year", "Year", "{:.0f}"), ("Yield", "Yield MT/ha", "{:.2f}"), ("Production", "Production kt", "{:,.0f}"),
                    ("FSI", "FSI", "{:.0f}"), ("FSStatus", "Status", "{}"), ("DroughtRisk", "Drought", "{}"),
                    ("Rainfall", "Rain mm", "{:,.0f}"), ("Temperature", "Temp °C", "{:.1f}"),
                    ("Price", "Price USD/MT", "{:,.0f}"), ("TradeBalance", "Trade USD M", "{:,.0f}"),

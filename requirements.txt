@@ -1,5 +1,6 @@
 streamlit>=1.56
 pandas
 numpy
+scipy
 scikit-learn
 plotly>=5.19
