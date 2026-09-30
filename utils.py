@@ -1,7 +1,11 @@
+from pathlib import Path
+
 import pandas as pd
 
+DATA_PATH = Path(__file__).with_name("data.csv")
+
 def load_data():
-    df = pd.read_csv("data.csv")
+    df = pd.read_csv(DATA_PATH)
 
     # Normalize column names
     df.columns = [c.strip().lower() for c in df.columns]

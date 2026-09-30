@@ -66,14 +66,16 @@ Built for agronomists, policy analysts, and food-security researchers who need *
 
 | Feature | Description |
 |---|---|
-| **ML Forecasting** | RandomForest predicts FSI direction with calibrated confidence score |
-| **Yield Analytics** | Multi-year trend lines with automatic peak and trough detection |
-| **Climate Overlay** | Rainfall and temperature overlaid directly on production charts |
-| **Smart Alerts** | Auto-generated risk alerts — drought, loss rate, FSI decline |
-| **Trade & Economics** | Trade balance bars, price trend line, profit margin gauge |
-| **AI Insights Panel** | Six key derived metrics per country / crop selection |
-| **Global Dataset** | 10,500+ records spanning Asia, Africa, Americas, and Oceania |
-| **Responsive Layout** | `wide` layout with custom CSS — desktop and tablet ready |
+| **ML Forecasting** | RandomForest estimates the probability that FSI rises by the next record |
+| **Yield Projections** | Linear yield trend with next-year and 3-year projections and a likely range |
+| **KPI Strip** | Yield, FSI, production, price and trade balance with change vs the previous record |
+| **Smart Alerts** | Auto-generated risk alerts — drought, loss rate, FSI decline, forecast direction |
+| **Climate Tab** | Rainfall, temperature, rainfall-vs-yield scatter and a climate profile |
+| **Economics Tab** | Production, price, profit margin and trade surplus/deficit charts |
+| **Crop Comparison** | Yield of two crops side by side, plus a metrics table |
+| **Data Tab** | The filtered records as a table, with CSV download |
+| **Shareable Links** | `?country=India&crop=Wheat` opens straight into that analysis |
+| **Responsive Layout** | Light, neutral theme that adapts from desktop down to phone width |
 
 </div>
 
@@ -84,11 +86,12 @@ Built for agronomists, policy analysts, and food-security researchers who need *
 ```
 agriflow-ai/
 │
-├── app.py            ← Streamlit entry point · UI, charts, alert engine
-├── model.py          ← Feature engineering + RandomForest training & predict
-├── utils.py          ← CSV loader with robust column-name normalization
-├── data.csv          ← 10,500+ row global agricultural dataset (2013-2024)
-└── requirements.txt  ← Python dependencies
+├── app.py                 ← Streamlit entry point · UI, charts, alert engine
+├── model.py               ← Feature engineering + RandomForest training & predict
+├── utils.py               ← CSV loader with robust column-name normalization
+├── data.csv               ← 10,500+ row global agricultural dataset (2013-2024)
+├── .streamlit/config.toml ← Theme (colors, Inter font, radius) and toolbar settings
+└── requirements.txt       ← Python dependencies
 ```
 
 ---
@@ -141,13 +144,21 @@ plotly
 │                      ▼                                         │
 │               model.prepare_features()                         │
 │                      │  target = FSI(t+1) > FSI(t)  →  0 / 1 │
+│                      │  latest record: no target (predicted)  │
 │                      ▼                                         │
 │               model.train_model()                              │
 │                      │  RandomForestClassifier(n_estimators=100)│
 │                      ▼                                         │
-│               model.predict()  ──►  prediction + probability   │
+│               model.predict()  ──►  prediction + P(FSI rises)  │
 └────────────────────────────────────────────────────────────────┘
 ```
+
+The model is trained separately for each country and crop, on the records in the
+selected period. The latest record is never part of training, so the forecast is
+always made on data the model has not seen. If a history holds only one outcome
+(FSI always rose, or never did), a classifier cannot be trained and the app falls
+back to the smoothed share of past rises. With 2–11 year-to-year changes per pair,
+treat the probability as a rough signal, not a calibrated one.
 
 **Input features:**
 
@@ -180,16 +191,17 @@ plotly
 ┌──────────────────────────────────────────────────────────────┐
 │  SIDEBAR                 │  MAIN PANEL                       │
 │  ────────────────────    │  ───────────────────────────────  │
-│  Country selector        │  FSI Overview Card                │
-│  Crop selector           │  3-step Forecast (up / flat / dn) │
-│  Year range slider       │  Yield Trend Chart                │
-│  Run Forecast button     │  Rainfall & Temp Overlay          │
-│                          │  Supply Chain Metrics             │
-│                          │  Smart Alerts Panel               │
-│                          │  AI Insights Panel                │
-│                          │  Trade & Economics Charts         │
+│  Country selector        │  Header · status chips            │
+│  Crop selector           │  KPI strip (5 metrics)            │
+│  Period (all / 5 / 3 yr) │  Outlook: FSI + 2 yield projections│
+│  Compare toggle          │  Tabs:                            │
+│  Run analysis button     │   Overview · Climate · Economics  │
+│                          │   Compare · Data                  │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+Only crops with at least 3 records are listed, and the shorter periods appear only
+when they still hold 3 records, so every selection can be analysed.
 
 ---
 
@@ -197,28 +209,30 @@ plotly
 
 The alert engine automatically flags:
 
-- **High Drought Risk** — DroughtRisk = Critical
-- **FSI Declining** — FSI dropped more than 5 pts
+- **High Drought Risk** — DroughtRisk is High or Critical
+- **Moderate Drought Risk** — DroughtRisk is Moderate
+- **FSI Declining** — FSI dropped more than 5 pts (any drop is flagged as medium)
 - **High Loss Rate** — Post-harvest loss above 15%
 - **Elevated Loss Rate** — Post-harvest loss above 8%
-- **Positive Forecast** — Model confidence above 65% for FSI improvement
+- **Positive / Negative Outlook** — P(FSI rises) at or above 65%, or at or below 35%
 
 ---
 
 ## Configuration & Customization
 
-**Change model features** — edit `model.py :: train_model()`:
+**Change model features** — edit `FEATURES` at the top of `model.py`:
 
 ```python
-features = ["Yield", "Production", "Rainfall", "Temperature"]
+FEATURES = ["Yield", "Production", "Rainfall", "Temperature"]
 # Extend with: "SoilHealth", "Irrigation", "Mechanization"
 ```
 
 **Add new data columns** — `utils.py` normalizes column names automatically.
 Match the expected aliases inside each block of `load_data()`.
 
-**Change theme colors** — CSS variables live at the top of the `<style>` block in `app.py`.
-Primary green: `#2e8b57`
+**Change theme colors** — base theme in `.streamlit/config.toml`; component tokens
+are CSS variables at the top of the `<style>` block in `app.py`, and chart colors
+are constants near the top of `app.py`. Primary green: `#1a7f4e`
 
 ---
 

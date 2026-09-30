@@ -1,1119 +1,761 @@
-import streamlit as st
-import plotly.graph_objects as go
-import pandas as pd
 import datetime
+
+import numpy as np
+import plotly.graph_objects as go
+import streamlit as st
+
+from model import predict, prepare_features, train_model
 from utils import load_data
-from model import prepare_features, train_model, predict
 
-st.set_page_config(page_title="AgriFlow AI", layout="wide", page_icon="")
+st.set_page_config(page_title="AgriFlow AI", layout="wide", page_icon=":material/eco:")
 
-# ─────────────────────────── CSS ───────────────────────────
-st.markdown("""
+MIN_RECORDS = 3  # the forecast needs at least two year-to-year outcomes to learn from
+
+# Chart colors. Pairs that share a chart (crop A/B, surplus/deficit) pass the
+# color-vision-deficiency separation check; green/orange does not, so they never share one.
+GREEN, BLUE, VIOLET, ORANGE, RED = "#1a7f4e", "#2a78d6", "#4a3aa7", "#eb6834", "#e34948"
+TREND = "#98a2b3"
+INK, INK_2, MUTED = "#101828", "#475467", "#667085"
+GRID, AXIS, BORDER = "#eef0f3", "#d0d5dd", "#e4e7ec"
+FONT = "Inter, system-ui, -apple-system, 'Segoe UI', sans-serif"
+
+_SVG = ('<svg viewBox="0 0 16 16" width="{s}" height="{s}" fill="none" stroke="currentColor" '
+        'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">{p}</svg>')
+_PATHS = {
+    "leaf":  '<path d="M3.5 12.5c0-5.5 3.5-9 9-9 0 5.5-3.5 9-9 9z"/><path d="M3.5 12.5l5-5"/>',
+    "up":    '<path d="M2.5 11l4-4 2.5 2.5 4.5-5"/><path d="M10 4.5h3.5V8"/>',
+    "down":  '<path d="M2.5 5l4 4 2.5-2.5 4.5 5"/><path d="M10 11.5h3.5V8"/>',
+    "flat":  '<path d="M2.5 8h11"/><path d="M10.5 5l3 3-3 3"/>',
+    "alert": '<path d="M8 2.5l6 10.5H2L8 2.5z"/><path d="M8 6.5v3"/><path d="M8 11.5h.01"/>',
+    "check": '<circle cx="8" cy="8" r="6"/><path d="M5.5 8.2l1.8 1.8 3.2-3.5"/>',
+}
+
+
+def icon(name, size=16):
+    return _SVG.format(s=size, p=_PATHS[name])
+
+
+def html(markup):
+    """Render trusted HTML. Lines are stripped so Markdown never reads indentation as a code block."""
+    st.markdown(" ".join(line.strip() for line in markup.splitlines() if line.strip()),
+                unsafe_allow_html=True)
+
+
+# ─────────────────────────── STYLE ───────────────────────────
+st.html("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+:root {
+  --bg:#f6f7f9; --surface:#ffffff; --border:#e4e7ec; --ink:#101828; --ink-2:#475467;
+  --muted:#667085; --subtle:#98a2b3; --fill:#f2f4f7;
+  --accent:#1a7f4e; --accent-soft:#e9f5ee;
+  --good:#067647; --good-bg:#ecfdf3; --good-line:#abefc6; --good-dot:#0ca30c;
+  --warn:#b54708; --warn-bg:#fffaeb; --warn-line:#fedf89; --warn-dot:#f0a30a;
+  --bad:#b42318;  --bad-bg:#fef3f2;  --bad-line:#fecdca;  --bad-dot:#d03b3b;
+  --shadow:0 1px 2px rgba(16,24,40,.05);
+}
+[data-testid="stMainBlockContainer"] { padding-top:2.25rem; padding-bottom:3rem; max-width:1400px; }
+[data-testid="stHeader"] { background:transparent; }
+[data-testid="stDecoration"] { display:none; }
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p { font-size:12.5px; font-weight:600; color:var(--ink-2); }
 
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+/* Cards: st.container(key="card-…") */
+[class*="st-key-card"] {
+  background:var(--surface); border:1px solid var(--border); border-radius:12px;
+  padding:18px 20px 10px; box-shadow:var(--shadow);
+}
+/* Cards alone in a column fill its height, so side-by-side cards line up */
+[data-testid="stColumn"] > [data-testid="stVerticalBlock"] > [data-testid="stLayoutWrapper"]:has(> [class*="st-key-card"]) { flex:1 1 auto; }
+.af-card-title { font-size:14px; font-weight:600; color:var(--ink); }
+.af-card-sub   { font-size:12.5px; color:var(--muted); margin-top:2px; }
 
-/* ── PAGE ── */
-body { background: #eef4ee; color: #1a2e1a; }
-.block-container { padding-top: 1rem !important; padding-bottom: 2.5rem !important; }
+/* Page header */
+.af-head { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap; margin-bottom:8px; }
+.af-eyebrow { font-size:12px; font-weight:600; color:var(--accent); letter-spacing:.05em; text-transform:uppercase; margin-bottom:6px; }
+.af-title { font-size:30px; font-weight:700; color:var(--ink); letter-spacing:-.02em; line-height:1.15; }
+.af-title span { color:var(--subtle); font-weight:500; }
+.af-meta { font-size:13px; color:var(--muted); margin-top:6px; }
+.af-chips { display:flex; gap:8px; flex-wrap:wrap; }
+.af-chip {
+  display:inline-flex; align-items:center; gap:7px; padding:5px 11px; border-radius:999px;
+  font-size:12.5px; color:var(--ink-2); background:var(--surface); border:1px solid var(--border);
+}
+.af-chip i { width:7px; height:7px; border-radius:50%; background:var(--subtle); }
+.af-chip b { font-weight:600; }
+.af-chip.good { background:var(--good-bg); border-color:var(--good-line); color:var(--good); }
+.af-chip.warn { background:var(--warn-bg); border-color:var(--warn-line); color:var(--warn); }
+.af-chip.bad  { background:var(--bad-bg);  border-color:var(--bad-line);  color:var(--bad); }
+.af-chip.good i { background:var(--good-dot); }
+.af-chip.warn i { background:var(--warn-dot); }
+.af-chip.bad i  { background:var(--bad-dot); }
 
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #d8e8d8; }
-::-webkit-scrollbar-thumb { background: #2e8b57; border-radius: 3px; }
-
-/* ── SIDEBAR ── */
-[data-testid="stSidebar"] {
-    background: #12271e !important;
-    border-right: 4px solid #2e8b57;
+/* KPI strip: the 1px grid gap over a border-colored background draws the dividers */
+.af-kpis {
+  display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); gap:1px; background:var(--border);
+  border:1px solid var(--border); border-radius:12px; overflow:hidden; box-shadow:var(--shadow);
 }
-[data-testid="stSidebar"] * { color: #c8e6c9 !important; }
-[data-testid="stSidebar"] .stButton > button {
-    background: linear-gradient(180deg, #3da868 0%, #2e8b57 100%) !important;
-    color: #ffffff !important;
-    font-weight: 700 !important;
-    border: 2px solid #4caf7d !important;
-    border-bottom: 4px solid #1a5c38 !important;
-    border-radius: 10px !important;
-    padding: 10px !important;
-    letter-spacing: 0.5px;
-    transition: all 0.15s ease;
-    box-shadow: 0 4px 12px rgba(46,139,87,0.35);
+.af-kpi { background:var(--surface); padding:16px 20px; }
+.af-kpi-label { font-size:12.5px; font-weight:500; color:var(--muted); }
+.af-kpi-value { font-size:26px; font-weight:650; color:var(--ink); letter-spacing:-.02em; margin-top:6px; line-height:1.2; white-space:nowrap; }
+.af-kpi-value small { font-size:13px; font-weight:500; color:var(--muted); margin-left:4px; letter-spacing:0; }
+.af-delta { font-size:12.5px; font-weight:600; margin-top:6px; }
+.af-delta span { color:var(--muted); font-weight:400; }
+.af-delta.good { color:var(--good); } .af-delta.bad { color:var(--bad); } .af-delta.neutral { color:var(--ink-2); }
+@media (max-width:1100px) {
+  .af-kpis { grid-template-columns:repeat(6, minmax(0,1fr)); }
+  .af-kpi { grid-column:span 2; } .af-kpi:nth-child(n+4) { grid-column:span 3; }
 }
-[data-testid="stSidebar"] .stButton > button:hover {
-    background: linear-gradient(180deg, #4dbf78 0%, #3da868 100%) !important;
-    transform: translateY(-2px);
-    box-shadow: 0 6px 18px rgba(46,139,87,0.45) !important;
-}
-[data-testid="stSidebar"] .stButton > button:active {
-    transform: translateY(1px);
-    border-bottom-width: 2px !important;
-}
-
-/* ── HEADER ── */
-.agri-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 18px 28px;
-    background: linear-gradient(135deg, #12271e 0%, #1a3828 60%, #1e4530 100%);
-    border-radius: 18px;
-    margin-bottom: 24px;
-    border: 2px solid #2e8b57;
-    border-bottom: 5px solid #1a5c38;
-    box-shadow: 0 6px 0 #0e1f16, 0 10px 32px rgba(14,31,22,0.35);
-}
-.agri-logo { display: flex; align-items: center; gap: 14px; }
-.agri-logo-icon {
-    width: 48px; height: 48px;
-    background: linear-gradient(145deg, #3da868, #2e8b57);
-    border-radius: 14px;
-    border: 2px solid #4caf7d;
-    border-bottom: 3px solid #1a5c38;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 14px; font-weight: 800; color: #fff; letter-spacing: -0.5px;
-    box-shadow: 0 3px 0 #1a5c38, 0 4px 12px rgba(46,139,87,0.4);
-}
-.agri-logo-title { font-size: 22px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; }
-.agri-logo-title span { color: #4caf7d; }
-.agri-logo-sub   { font-size: 11px; color: #5a9a6a; letter-spacing: 0.5px; margin-top: 2px; }
-.header-right    { display: flex; align-items: center; gap: 12px; }
-
-/* Date widget */
-.date-widget {
-    background: linear-gradient(160deg, #1e4530 0%, #163828 100%);
-    border: 2px solid #2e8b57;
-    border-bottom: 4px solid #1a5c38;
-    border-radius: 14px;
-    padding: 10px 22px;
-    text-align: center;
-    min-width: 80px;
-    box-shadow: 0 4px 0 #0e1f16;
-}
-.date-widget-day   { font-size: 28px; font-weight: 800; color: #4caf7d; line-height: 1; }
-.date-widget-month { font-size: 10px; color: #5a9a6a; text-transform: uppercase; letter-spacing: 1.5px; margin-top: 3px; }
-
-/* ── MAIN CARD ── */
-.main-card {
-    background: linear-gradient(160deg, #ffffff 0%, #f6fbf6 100%);
-    border-radius: 20px;
-    border: 2px solid #7cbf8a;
-    border-top: 6px solid #2e8b57;
-    border-bottom: 4px solid #4caf7d;
-    padding: 28px 32px;
-    margin-bottom: 24px;
-    box-shadow: 0 6px 0 #b8d8b8, 0 12px 36px rgba(26,56,40,0.1);
-}
-.main-card-top {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    flex-wrap: wrap;
-    gap: 20px;
-}
-.main-card-left h4 {
-    font-size: 11px; color: #5a8a6a; margin-bottom: 6px;
-    font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px;
-}
-.main-card-left h1 {
-    font-size: 54px; font-weight: 800; color: #12271e;
-    margin: 0; line-height: 1; letter-spacing: -2px;
-}
-.main-card-left h1 span { font-size: 20px; font-weight: 500; color: #7aaa8a; letter-spacing: 0; }
-.change-down { color: #b71c1c; font-size: 13px; font-weight: 700; margin-top: 10px; }
-.change-up   { color: #1b5e20; font-size: 13px; font-weight: 700; margin-top: 10px; }
-.pill {
-    display: inline-block; padding: 3px 12px;
-    background: linear-gradient(135deg, #e8f5e9, #d0f0d8);
-    border: 1px solid #81c784;
-    border-bottom: 2px solid #4caf50;
-    border-radius: 20px;
-    font-size: 11px; color: #1b5e20; font-weight: 700;
+@media (max-width:640px) {
+  .af-kpis { grid-template-columns:1fr 1fr; }
+  .af-kpi, .af-kpi:nth-child(n+4) { grid-column:span 1; } .af-kpi:last-child { grid-column:span 2; }
 }
 
-.main-stats { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
-.stat-item {
-    text-align: center;
-    background: linear-gradient(160deg, #f1f9f1, #e8f5e9);
-    border: 2px solid #81c784;
-    border-top: 3px solid #4caf50;
-    border-bottom: 3px solid #388e3c;
-    border-radius: 12px;
-    padding: 12px 16px;
-    min-width: 90px;
-    box-shadow: 0 3px 0 #b8d8c8;
-}
-.stat-label { font-size: 9px; text-transform: uppercase; letter-spacing: 1.2px; color: #5a8a6a; margin-bottom: 5px; font-weight: 800; }
-.stat-value { font-size: 14px; font-weight: 800; color: #12271e; }
+/* Outlook */
+.af-section { font-size:15px; font-weight:600; color:var(--ink); margin:18px 0 0; }
+.af-section span { font-size:13px; font-weight:400; color:var(--muted); margin-left:8px; }
+.af-outlook { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:16px; }
+.af-panel { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:18px 20px; box-shadow:var(--shadow); }
+.af-panel-label { display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:12.5px; font-weight:500; color:var(--muted); }
+.af-tag { font-size:11px; font-weight:600; color:var(--ink-2); background:var(--fill); border-radius:6px; padding:2px 7px; white-space:nowrap; }
+.af-outlook-value { display:flex; align-items:center; gap:10px; font-size:21px; font-weight:650; color:var(--ink); letter-spacing:-.01em; margin-top:12px; }
+.af-outlook-value small { font-size:13px; font-weight:500; color:var(--muted); letter-spacing:0; }
+.ic { flex:none; display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:8px; }
+.ic.good { background:var(--good-bg); color:var(--good); }
+.ic.warn { background:var(--warn-bg); color:var(--warn); }
+.ic.bad  { background:var(--bad-bg);  color:var(--bad); }
+.ic.neutral { background:var(--fill); color:var(--ink-2); }
+.af-bar { height:6px; border-radius:999px; background:var(--fill); margin-top:14px; overflow:hidden; }
+.af-bar span { display:block; height:100%; border-radius:999px; background:var(--accent); }
+.af-panel-foot { font-size:12.5px; color:var(--muted); margin-top:10px; line-height:1.5; }
+.af-panel-foot b { color:var(--ink-2); font-weight:600; }
+@media (max-width:900px) { .af-outlook { grid-template-columns:1fr; } }
 
-/* ── SECTION TITLE ── */
-.section-title {
-    font-size: 11px; font-weight: 800; color: #1e5c38;
-    margin: 28px 0 14px 0;
-    display: flex; align-items: center; gap: 10px;
-    text-transform: uppercase; letter-spacing: 1.5px;
-}
-.section-title::before {
-    content: '';
-    width: 5px; height: 18px;
-    background: linear-gradient(180deg, #4caf7d, #2e8b57);
-    border-radius: 3px;
-    flex-shrink: 0;
-}
-.section-title::after {
-    content: ''; flex: 1; height: 2px;
-    background: linear-gradient(90deg, #81c784, #c8e6c9, #eef4ee);
-    margin-left: 4px;
-    border-radius: 1px;
-}
+/* Alerts */
+.af-alert { display:flex; gap:12px; padding:12px 0; border-top:1px solid var(--border); }
+.af-alert:first-child { border-top:none; padding-top:6px; }
+.af-alert-title { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:13.5px; font-weight:600; color:var(--ink); }
+.af-sev { font-size:11px; font-weight:600; padding:1px 8px; border-radius:999px; }
+.af-sev.good { background:var(--good-bg); color:var(--good); }
+.af-sev.warn { background:var(--warn-bg); color:var(--warn); }
+.af-sev.bad  { background:var(--bad-bg);  color:var(--bad); }
+.af-alert-body { font-size:13px; color:var(--ink-2); line-height:1.55; margin-top:3px; }
 
-/* ── FORECAST CARDS ── */
-.forecast-card {
-    border-radius: 18px;
-    padding: 28px 22px;
-    text-align: center;
-    height: 100%;
-    transition: transform 0.18s, box-shadow 0.18s;
-}
-.forecast-card:hover { transform: translateY(-4px); }
+/* Key-value rows */
+.af-row { display:flex; justify-content:space-between; gap:12px; padding:10px 0; border-top:1px solid var(--border); font-size:13px; }
+.af-row:first-child { border-top:none; padding-top:6px; }
+.af-row .k { color:var(--muted); }
+.af-row .v { color:var(--ink); font-weight:600; text-align:right; }
+.af-row .v small { color:var(--muted); font-weight:400; }
 
-.fc-green {
-    background: linear-gradient(160deg, #ffffff 0%, #f2faf5 100%);
-    border: 2px solid #2e8b57;
-    border-top: 5px solid #1b5e20;
-    border-bottom: 4px solid #2e8b57;
-    box-shadow: 0 5px 0 #a5d6b5, 0 8px 24px rgba(46,139,87,0.15);
-}
-.fc-amber {
-    background: linear-gradient(160deg, #ffffff 0%, #fffdf0 100%);
-    border: 2px solid #f9a825;
-    border-top: 5px solid #e65100;
-    border-bottom: 4px solid #f9a825;
-    box-shadow: 0 5px 0 #ffe082, 0 8px 24px rgba(249,168,37,0.15);
-}
-.fc-red {
-    background: linear-gradient(160deg, #ffffff 0%, #fff8f8 100%);
-    border: 2px solid #e53935;
-    border-top: 5px solid #b71c1c;
-    border-bottom: 4px solid #e53935;
-    box-shadow: 0 5px 0 #ffcdd2, 0 8px 24px rgba(229,57,53,0.15);
-}
+/* Meters */
+.af-meters { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:28px; padding:6px 0 8px; }
+.af-meter-top { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+.af-meter-label { font-size:12.5px; font-weight:500; color:var(--muted); }
+.af-meter-value { font-size:18px; font-weight:650; color:var(--ink); }
+.af-meter-value small { font-size:12px; font-weight:500; color:var(--muted); margin-left:2px; }
+.af-meter .af-bar { margin-top:10px; }
+.af-meter-note { font-size:12px; color:var(--muted); margin-top:8px; }
+@media (max-width:900px) { .af-meters { grid-template-columns:repeat(2, minmax(0,1fr)); } }
 
-.fc-label        { font-size: 9px; text-transform: uppercase; letter-spacing: 2px; color: #7a9a7a; margin-bottom: 18px; font-weight: 800; }
-.fc-status-green { font-size: 19px; font-weight: 800; color: #1b5e20; letter-spacing: 1px; }
-.fc-status-amber { font-size: 19px; font-weight: 800; color: #e65100; letter-spacing: 1px; }
-.fc-status-red   { font-size: 19px; font-weight: 800; color: #b71c1c; letter-spacing: 1px; }
+/* Comparison table */
+.af-table { width:100%; border-collapse:collapse; font-size:13px; margin:4px 0 8px; }
+.af-table th { font-size:12px; font-weight:600; color:var(--muted); text-align:left; padding:10px 12px; border-bottom:1px solid var(--border); background:#f9fafb; }
+.af-table td { padding:10px 12px; border-bottom:1px solid var(--border); color:var(--ink); font-variant-numeric:tabular-nums; }
+.af-table td:first-child { color:var(--ink-2); }
+.af-table tr:last-child td { border-bottom:none; }
+.af-swatch { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:6px; }
 
-.fc-conf-bar-bg    { width: 100%; height: 7px; background: #e8f5e9; border-radius: 4px; margin: 16px 0 8px 0; border: 1px solid #c8e6c9; overflow: hidden; }
-.fc-conf-bar-green { height: 7px; border-radius: 4px; background: linear-gradient(90deg, #81c784, #2e8b57, #1b5e20); }
-.fc-conf-bar-amber { height: 7px; border-radius: 4px; background: linear-gradient(90deg, #ffe082, #ffa000, #e65100); }
-.fc-conf  { font-size: 11px; color: #5a8a6a; font-weight: 600; }
-.fc-yield { font-size: 13px; color: #2e5a3e; margin-top: 10px; font-weight: 700; }
+/* Sidebar */
+.af-brand { display:flex; align-items:center; gap:10px; padding-bottom:18px; margin-bottom:6px; border-bottom:1px solid var(--border); }
+.af-mark { width:34px; height:34px; border-radius:9px; background:var(--accent); color:#fff; display:flex; align-items:center; justify-content:center; }
+.af-brand-name { font-size:15px; font-weight:700; color:var(--ink); letter-spacing:-.01em; }
+.af-brand-sub { font-size:12px; color:var(--muted); }
+.af-coverage { font-size:12.5px; color:var(--muted); line-height:1.8; padding-top:14px; border-top:1px solid var(--border); }
+.af-coverage b { color:var(--ink-2); font-weight:600; }
 
-/* ── METRIC CARDS ── */
-.metric-card {
-    background: linear-gradient(160deg, #ffffff 0%, #f6fbf6 100%);
-    border: 2px solid #81c784;
-    border-top: 4px solid #2e8b57;
-    border-bottom: 3px solid #388e3c;
-    border-radius: 14px;
-    padding: 18px 12px;
-    text-align: center;
-    transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
-    box-shadow: 0 3px 0 #b8d8b8;
-}
-.metric-card:hover {
-    border-color: #2e8b57;
-    border-top-color: #1b5e20;
-    transform: translateY(-3px);
-    box-shadow: 0 6px 0 #81c784, 0 10px 24px rgba(46,139,87,0.15);
-}
-.mc-label    { font-size: 9px; text-transform: uppercase; letter-spacing: 1.2px; color: #5a8a6a; margin-bottom: 10px; font-weight: 800; }
-.mc-value-green  { font-size: 21px; font-weight: 800; color: #1b5e20; }
-.mc-value-amber  { font-size: 21px; font-weight: 800; color: #e65100; }
-.mc-value-blue   { font-size: 21px; font-weight: 800; color: #0d47a1; }
-.mc-value-purple { font-size: 21px; font-weight: 800; color: #4a148c; }
-.mc-value-white  { font-size: 21px; font-weight: 800; color: #12271e; }
-.mc-value-red    { font-size: 21px; font-weight: 800; color: #b71c1c; }
-.mc-sub { font-size: 10px; color: #7a9a7a; margin-top: 5px; font-weight: 600; }
+/* Empty state */
+.af-empty { max-width:580px; margin:9vh auto 0; text-align:center; }
+.af-empty-icon { width:48px; height:48px; border-radius:12px; background:var(--accent-soft); color:var(--accent); display:flex; align-items:center; justify-content:center; margin:0 auto 18px; }
+.af-empty-title { font-size:24px; font-weight:650; color:var(--ink); letter-spacing:-.015em; }
+.af-empty-sub { font-size:14px; color:var(--muted); line-height:1.6; margin-top:8px; }
+.af-empty-stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:1px; background:var(--border); border:1px solid var(--border); border-radius:12px; overflow:hidden; margin-top:28px; box-shadow:var(--shadow); }
+.af-empty-stats div { background:var(--surface); padding:14px 8px; }
+.af-empty-stats b { display:block; font-size:18px; font-weight:650; color:var(--ink); }
+.af-empty-stats span { font-size:12px; color:var(--muted); }
 
-/* ── CHART WRAPPER ── */
-.chart-outer {
-    background: linear-gradient(160deg, #ffffff 0%, #f9fdf9 100%);
-    border: 2px solid #81c784;
-    border-top: 5px solid #2e8b57;
-    border-bottom: 3px solid #4caf50;
-    border-radius: 18px;
-    padding: 6px;
-    box-shadow: 0 5px 0 #b8d8b8, 0 8px 24px rgba(26,56,40,0.08);
-    margin-bottom: 6px;
-}
-
-/* ── ALERT CARDS ── */
-.alert-card {
-    border-radius: 14px;
-    padding: 16px 18px;
-    margin-bottom: 12px;
-    display: flex;
-    align-items: flex-start;
-    gap: 14px;
-    border-left: 6px solid;
-    border-top: 2px solid;
-    border-right: 2px solid;
-    border-bottom: 3px solid;
-}
-.alert-high {
-    background: linear-gradient(135deg, #fff5f5 0%, #ffebee 100%);
-    border-left-color: #b71c1c;
-    border-top-color: #ef9a9a;
-    border-right-color: #ef9a9a;
-    border-bottom-color: #e53935;
-}
-.alert-medium {
-    background: linear-gradient(135deg, #fffde7 0%, #fff8e1 100%);
-    border-left-color: #e65100;
-    border-top-color: #ffe082;
-    border-right-color: #ffe082;
-    border-bottom-color: #ffa000;
-}
-.alert-low {
-    background: linear-gradient(135deg, #f1f8e9 0%, #e8f5e9 100%);
-    border-left-color: #1b5e20;
-    border-top-color: #a5d6a7;
-    border-right-color: #a5d6a7;
-    border-bottom-color: #388e3c;
-}
-.alert-dot-high   { width: 11px; height: 11px; border-radius: 50%; background: #b71c1c; border: 2px solid #ef5350; margin-top: 3px; flex-shrink: 0; box-shadow: 0 0 0 3px rgba(183,28,28,0.15); }
-.alert-dot-medium { width: 11px; height: 11px; border-radius: 50%; background: #e65100; border: 2px solid #ff9800; margin-top: 3px; flex-shrink: 0; box-shadow: 0 0 0 3px rgba(230,81,0,0.15); }
-.alert-dot-low    { width: 11px; height: 11px; border-radius: 50%; background: #1b5e20; border: 2px solid #4caf50; margin-top: 3px; flex-shrink: 0; box-shadow: 0 0 0 3px rgba(27,94,32,0.15); }
-.alert-title { font-size: 13px; font-weight: 800; color: #12271e; margin-bottom: 4px; }
-.alert-body  { font-size: 12px; color: #3a5a3a; line-height: 1.65; }
-
-/* ── INSIGHT CARD ── */
-.insight-card {
-    background: linear-gradient(160deg, #ffffff 0%, #f2faf5 100%);
-    border: 2px solid #4caf50;
-    border-top: 6px solid #2e8b57;
-    border-bottom: 3px solid #388e3c;
-    border-radius: 18px;
-    padding: 24px 26px;
-    height: 100%;
-    box-shadow: 0 5px 0 #a5d6a7, 0 8px 24px rgba(46,139,87,0.1);
-}
-.insight-title {
-    font-size: 11px; font-weight: 800; color: #1b5e20;
-    margin-bottom: 16px;
-    text-transform: uppercase; letter-spacing: 1.5px;
-    padding-bottom: 12px;
-    border-bottom: 3px solid #81c784;
-}
-.insight-item  {
-    font-size: 12px; color: #2e4a2e; line-height: 1.7; padding: 8px 0;
-    border-bottom: 1px solid #c8e6c9;
-    display: flex; justify-content: space-between; gap: 10px;
-}
-.insight-item:last-child { border-bottom: none; }
-.insight-key { color: #5a7a5a; font-weight: 600; }
-.insight-val { font-weight: 800; text-align: right; }
-
-/* ── COMPARE TABLE ── */
-.compare-table {
-    width: 100%; border-collapse: separate; border-spacing: 0;
-    border-radius: 14px; overflow: hidden; font-size: 13px;
-    border: 2px solid #81c784; margin-top: 14px;
-    box-shadow: 0 3px 0 #b8d8b8;
-}
-.compare-table th {
-    background: linear-gradient(135deg, #2e8b57, #1b5e20);
-    color: #ffffff;
-    font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
-    padding: 14px 16px; text-align: left; font-weight: 800;
-    border-bottom: 3px solid #1b5e20;
-}
-.compare-table td {
-    padding: 11px 16px; border-bottom: 1px solid #e8f5e9;
-    color: #12271e; background: #fff; font-weight: 600;
-}
-.compare-table tr:hover td { background: linear-gradient(90deg, #f1f9f1, #ffffff); }
-.compare-table tr:last-child td { border-bottom: none; }
-
-/* ── SIDEBAR COMPONENTS ── */
-.coverage-box {
-    background: linear-gradient(160deg, #1a3828, #12271e);
-    border: 2px solid #2e8b57;
-    border-top: 3px solid #4caf7d;
-    border-radius: 12px; padding: 14px 16px;
-    font-size: 12px; color: #7aaa8a;
-    margin-top: 14px; line-height: 2;
-    box-shadow: 0 3px 0 #0e1f16;
-}
-.coverage-title {
-    font-size: 9px; text-transform: uppercase; letter-spacing: 1.5px;
-    color: #4caf7d; font-weight: 800; margin-bottom: 8px;
-}
-.sidebar-divider { height: 1px; background: linear-gradient(90deg, transparent, #2e8b57, transparent); margin: 18px 0; }
-.sidebar-help    { font-size: 11px; color: #4a6a4a; line-height: 1.8; margin-top: 14px; }
-
-/* ── DONUT WRAPPER ── */
-.donut-wrap {
-    background: linear-gradient(160deg, #ffffff, #f6fbf6);
-    border: 2px solid #81c784;
-    border-top: 4px solid #2e8b57;
-    border-bottom: 3px solid #4caf50;
-    border-radius: 14px;
-    padding: 4px;
-    margin-bottom: 10px;
-    box-shadow: 0 4px 0 #b8d8b8;
-}
-
-/* ── CHART SECTION LABELS ── */
-.trade-label {
-    font-size: 11px; color: #1b5e20; text-transform: uppercase;
-    letter-spacing: 1px; margin-bottom: 8px; font-weight: 800;
-    padding: 6px 12px;
-    background: linear-gradient(135deg, #e8f5e9, #d0f0d8);
-    border: 2px solid #81c784;
-    border-bottom: 3px solid #4caf50;
-    border-radius: 8px;
-    display: inline-block;
-    box-shadow: 0 2px 0 #a5d6a7;
-}
-
-/* ── SPLASH ── */
-.splash-wrap { text-align: center; padding: 80px 0 60px; }
-.splash-icon {
-    width: 68px; height: 68px;
-    background: linear-gradient(145deg, #3da868, #2e8b57);
-    border-radius: 22px;
-    border: 3px solid #4caf7d;
-    border-bottom: 6px solid #1a5c38;
-    margin: 0 auto 24px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 18px; font-weight: 800; color: #fff;
-    box-shadow: 0 6px 0 #a5d6a7, 0 10px 28px rgba(46,139,87,0.25);
-}
-.splash-title { font-size: 26px; font-weight: 800; color: #12271e; margin-bottom: 10px; }
-.splash-sub   { font-size: 14px; color: #5a8a6a; font-weight: 500; }
-
-/* ── FOOTER ── */
-.agri-footer {
-    margin-top: 36px; padding: 18px 26px;
-    background: linear-gradient(135deg, #ffffff 0%, #f6fbf6 100%);
-    border: 2px solid #81c784;
-    border-top: 5px solid #2e8b57;
-    border-bottom: 3px solid #4caf50;
-    border-radius: 16px;
-    display: flex; align-items: center; justify-content: space-between;
-    flex-wrap: wrap; gap: 10px;
-    box-shadow: 0 5px 0 #b8d8b8;
-}
-.footer-brand { display: flex; align-items: center; gap: 10px; }
-.footer-icon {
-    width: 30px; height: 30px;
-    background: linear-gradient(145deg, #3da868, #2e8b57);
-    border-radius: 9px;
-    border: 2px solid #4caf7d;
-    border-bottom: 3px solid #1a5c38;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 10px; font-weight: 800; color: #fff;
-    box-shadow: 0 3px 0 #1a5c38;
-}
-.footer-name { font-size: 12px; color: #2e5a3e; font-weight: 700; }
-.footer-meta { font-size: 11px; color: #7a9a7a; font-weight: 500; }
-
-.js-plotly-plot .plotly .modebar { background: transparent !important; }
+.af-footer { display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; font-size:12px; color:var(--muted); border-top:1px solid var(--border); padding-top:16px; margin-top:24px; }
 </style>
-""", unsafe_allow_html=True)
+""")
 
-# ─────────────────────────── LOAD DATA ───────────────────────────
-df = load_data()
 
-now       = datetime.datetime.now()
-now_day   = now.strftime("%d")
-now_month = now.strftime("%b %Y")
-now_full  = now.strftime("%A, %d %B %Y")
+# ─────────────────────────── DATA ───────────────────────────
+@st.cache_resource(show_spinner=False)
+def get_data():
+    return load_data()  # shared and read-only: every view filters into a new frame
+
+
+@st.cache_data(show_spinner=False)
+def get_catalog():
+    """Country -> crops with enough records to analyse."""
+    counts = get_data().groupby(["Country", "Crop"]).size()
+    counts = counts[counts >= MIN_RECORDS]
+    return {country: sorted(g.index.get_level_values("Crop"))
+            for country, g in counts.groupby(level="Country")}
+
+
+def pair_records(country, crop, start_year=None):
+    df = get_data()
+    data = df[(df["Country"] == country) & (df["Crop"] == crop)].sort_values("Year")
+    return data if start_year is None else data[data["Year"] >= start_year]
+
+
+@st.cache_data(show_spinner=False)
+def forecast(country, crop, start_year):
+    data_model = prepare_features(pair_records(country, crop, start_year))
+    model, features = train_model(data_model)
+    pred, p_up = predict(model, data_model, features)
+    return pred, p_up, model is not None, int(data_model["target"].notna().sum())
+
+
+def yield_trend(data, horizons=(1, 3)):
+    """Linear yield trend and projections, each with a ±1 standard-error range."""
+    x = data["Year"].to_numpy(float)
+    y = data["Yield"].to_numpy(float)
+    slope, intercept = np.polyfit(x, y, 1)
+    resid = y - (slope * x + intercept)
+    s = np.sqrt((resid ** 2).sum() / max(len(x) - 2, 1))
+    sxx = ((x - x.mean()) ** 2).sum()
+    projections = []
+    for h in horizons:
+        x0 = x[-1] + h
+        mid = slope * x0 + intercept
+        se = s * np.sqrt(1 + 1 / len(x) + (x0 - x.mean()) ** 2 / sxx)
+        projections.append((int(x0), max(mid, 0.0), max(mid - se, 0.0), max(mid + se, 0.0)))
+    return slope, intercept, projections
+
+
+# ─────────────────────────── FORMATTING ───────────────────────────
+def compact(v):
+    a = abs(v)
+    if a >= 1e6:
+        return f"{v / 1e6:.2f}M"
+    if a >= 1e3:
+        return f"{v / 1e3:.1f}K"
+    return f"{v:,.0f}"
+
+
+def money_m(v):
+    """USD millions for Markdown; '&#36;' keeps '$' pairs from being read as LaTeX."""
+    sign, a = ("−" if v < 0 else ""), abs(v)
+    return f"{sign}&#36;{a / 1000:.2f}B" if a >= 1000 else f"{sign}&#36;{a:,.0f}M"
+
+
+def tone_for(value, table):
+    return next((tone for key, tone in table if key in str(value).lower()), "neutral")
+
+
+FS_TONES = [("food insecure", "bad"), ("moderately insecure", "warn"), ("moderately secure", "neutral"),
+            ("secure", "good")]
+DROUGHT_TONES = [("critical", "bad"), ("extreme", "bad"), ("high", "bad"), ("moderate", "warn"),
+                 ("medium", "warn"), ("low", "good")]
+
+
+def correlation_label(r):
+    if not np.isfinite(r):
+        return "n/a"
+    strength = "Strong" if abs(r) >= 0.7 else "Moderate" if abs(r) >= 0.4 else "Weak" if abs(r) >= 0.2 else "No clear"
+    direction = "" if strength == "No clear" else (" positive" if r > 0 else " negative")
+    return f"{strength}{direction}"
+
+
+# ─────────────────────────── CHART HELPERS ───────────────────────────
+def render_chart(fig, years=None, height=230, legend=False, y_range=None, zero_line=False,
+                 hovermode="x unified"):
+    fig.update_layout(
+        height=height,
+        margin=dict(l=4, r=8, t=32 if legend else 6, b=4),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT, size=12, color=INK_2),
+        showlegend=legend,
+        legend=dict(orientation="h", x=0, xanchor="left", y=1.02, yanchor="bottom",
+                    font=dict(size=12, color=INK_2), bgcolor="rgba(0,0,0,0)",
+                    itemclick=False, itemdoubleclick=False),
+        hovermode=hovermode,
+        hoverlabel=dict(bgcolor="#ffffff", bordercolor=BORDER, font=dict(family=FONT, size=12, color=INK)),
+        bargap=0.35, barcornerradius=4,
+    )
+    fig.update_xaxes(showgrid=False, showline=True, linecolor=AXIS, ticks="", zeroline=False,
+                     tickfont=dict(color=MUTED, size=11), fixedrange=True, automargin=True)
+    if years is not None:
+        span = int(years.max() - years.min())
+        fig.update_xaxes(tickformat="d", dtick=1 if span <= 8 else 2)
+    fig.update_yaxes(gridcolor=GRID, showline=False, ticks="", tickfont=dict(color=MUTED, size=11),
+                     zeroline=zero_line, zerolinecolor=AXIS, zerolinewidth=1, range=y_range,
+                     separatethousands=True, fixedrange=True, automargin=True)
+    st.plotly_chart(fig, theme=None, config={"displayModeBar": False})
+
+
+def line(x, y, name, color, unit, fmt=".2f", symbol="circle"):
+    return go.Scatter(
+        x=x, y=y, name=name, mode="lines+markers",
+        line=dict(color=color, width=2),
+        marker=dict(size=8, color=color, symbol=symbol, line=dict(color="#ffffff", width=2)),
+        hovertemplate=f"%{{y:{fmt}}} {unit}<extra>{name}</extra>",
+    )
+
+
+def bars(x, y, name, color, unit, fmt=",.0f"):
+    return go.Bar(x=x, y=y, name=name, marker=dict(color=color),
+                  hovertemplate=f"%{{y:{fmt}}} {unit}<extra>{name}</extra>")
+
+
+def card(key, title, subtitle=None):
+    box = st.container(key=f"card-{key}")
+    with box:
+        sub = f'<div class="af-card-sub">{subtitle}</div>' if subtitle else ""
+        html(f'<div><div class="af-card-title">{title}</div>{sub}</div>')
+    return box
+
 
 # ─────────────────────────── SIDEBAR ───────────────────────────
-with st.sidebar:
-    st.markdown("""
-    <div style='display:flex;align-items:center;gap:12px;margin-bottom:22px;
-                padding-bottom:16px;border-bottom:2px solid #2e8b57;'>
-        <div style='width:38px;height:38px;background:#2e8b57;border-radius:10px;
-                    border:2px solid #4caf7d;border-bottom:3px solid #1a5c38;
-                    display:flex;align-items:center;justify-content:center;
-                    font-size:12px;font-weight:800;color:#fff;
-                    box-shadow:0 3px 0 #1a5c38;'>AF</div>
-        <div>
-            <div style='font-size:15px;font-weight:800;color:#fff;letter-spacing:-0.3px;'>AgriFlow AI</div>
-            <div style='font-size:10px;color:#5a8a6a;letter-spacing:0.5px;'>Agricultural Intelligence</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+df = get_data()
+catalog = get_catalog()
+countries = sorted(catalog)
 
-    st.markdown("<div style='font-size:9px;text-transform:uppercase;letter-spacing:1.5px;"
-                "color:#4caf7d;font-weight:800;margin-bottom:10px;'>CONTROL PANEL</div>",
-                unsafe_allow_html=True)
-
-    country = st.selectbox("Country", sorted(df["Country"].unique()))
-    crop    = st.selectbox("Crop", df[df["Country"] == country]["Crop"].unique())
-
-    year_min = int(df["Year"].min())
-    year_max = int(df["Year"].max())
-    period   = st.selectbox("Analysis Period", [
-        f"Full Period ({year_min}–{year_max})",
-        f"Last 5 Years ({year_max-4}–{year_max})",
-        f"Last 3 Years ({year_max-2}–{year_max})",
-    ])
-
-    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-    st.markdown("<div style='font-size:9px;text-transform:uppercase;letter-spacing:1.5px;"
-                "color:#4caf7d;font-weight:800;margin-bottom:8px;'>COMPARISON</div>",
-                unsafe_allow_html=True)
-    compare_enabled = st.toggle("Enable Crop Comparison", value=False)
-    if compare_enabled:
-        compare_crop = st.selectbox("Compare with Crop",
-            [c for c in df[df["Country"] == country]["Crop"].unique() if c != crop])
+# Deep links: ?country=India&crop=Wheat opens straight into that analysis.
+if "country" not in st.session_state:
+    q_country, q_crop = st.query_params.get("country"), st.query_params.get("crop")
+    if q_country in catalog:
+        st.session_state.country = q_country
+        if q_crop in catalog[q_country]:
+            st.session_state.crop = q_crop
+            st.session_state.ready = True
     else:
-        compare_crop = None
+        st.session_state.country = "India" if "India" in catalog else countries[0]
 
-    st.markdown("<div class='sidebar-divider'></div>", unsafe_allow_html=True)
-    run = st.button("Run Analysis", use_container_width=True, type="primary")
-
-    n_countries = df["Country"].nunique()
-    n_crops     = df["Crop"].nunique()
-    n_records   = len(df)
-    n_combos    = df.groupby(["Country","Crop"]).ngroups
-
-    st.markdown(f"""
-    <div class="coverage-box">
-        <div class="coverage-title">DATA COVERAGE</div>
-        <b style="color:#c8e6c9">{n_countries}</b> countries &nbsp;·&nbsp;
-        <b style="color:#c8e6c9">{n_crops}</b> crops<br>
-        <b style="color:#c8e6c9">{year_min}–{year_max}</b> &nbsp;·&nbsp;
-        <b style="color:#c8e6c9">{n_records:,}</b> records<br>
-        <b style="color:#c8e6c9">{n_combos:,}</b> unique combinations
-    </div>
-    <div class="sidebar-help">
-        Select a country and crop, then click
-        <b style="color:#4caf7d">Run Analysis</b>
-        to get yield trends, food security forecasts,
-        risk alerts, and AI-powered recommendations.
-    </div>
-    """, unsafe_allow_html=True)
-
-# ─────────────────────────── SPLASH ───────────────────────────
-if not run:
-    st.markdown(f"""
-    <div class="agri-header">
-        <div class="agri-logo">
-            <div class="agri-logo-icon">AF</div>
-            <div>
-                <div class="agri-logo-title">AgriFlow <span>AI</span></div>
-                <div class="agri-logo-sub">Agricultural Intelligence Platform</div>
-            </div>
-        </div>
-        <div class="header-right">
-            <div class="date-widget">
-                <div class="date-widget-day">{now_day}</div>
-                <div class="date-widget-month">{now_month}</div>
-            </div>
+with st.sidebar:
+    html(f"""
+    <div class="af-brand">
+        <div class="af-mark">{icon("leaf", 18)}</div>
+        <div>
+            <div class="af-brand-name">AgriFlow AI</div>
+            <div class="af-brand-sub">Crop &amp; food security analytics</div>
         </div>
     </div>
-    <div class="splash-wrap">
-        <div class="splash-icon">AF</div>
-        <div class="splash-title">Welcome to AgriFlow AI</div>
-        <div class="splash-sub">Select a country and crop from the sidebar,
-        then click <b>Run Analysis</b></div>
+    """)
+
+    country = st.selectbox("Country", countries, key="country")
+
+    crops = catalog[country]
+    if st.session_state.get("crop") not in crops:
+        st.session_state.crop = crops[0]
+    crop = st.selectbox("Crop", crops, key="crop")
+
+    pair_all = pair_records(country, crop)
+    first_year, last_year = int(pair_all["Year"].min()), int(pair_all["Year"].max())
+    periods = {"All years": first_year}
+    for label, span in [("Last 5 yrs", 5), ("Last 3 yrs", 3)]:
+        start = last_year - span + 1
+        if start > first_year and (pair_all["Year"] >= start).sum() >= MIN_RECORDS:
+            periods[label] = start
+    if st.session_state.get("period") not in periods:
+        st.session_state.period = "All years"
+    period = st.segmented_control(
+        "Period", list(periods), key="period", required=True,
+        help=f"Shorter periods appear when they hold at least {MIN_RECORDS} records.")
+    start_year = periods.get(period, first_year)
+    n_period = int((pair_all["Year"] >= start_year).sum())
+    st.caption(f"{start_year}–{last_year} · {n_period} records")
+
+    others = [c for c in crops if c != crop]
+    compare_crop = None
+    if st.toggle("Compare with another crop", key="compare_on", disabled=not others):
+        if st.session_state.get("compare_crop") not in others:
+            st.session_state.compare_crop = others[0]
+        compare_crop = st.selectbox("Comparison crop", others, key="compare_crop")
+
+    if st.button("Run analysis", type="primary", icon=":material/insights:", width="stretch"):
+        st.session_state.ready = True
+
+    html(f"""
+    <div class="af-coverage">
+        <b>{df["Country"].nunique()}</b> countries · <b>{df["Crop"].nunique()}</b> crops<br>
+        <b>{int(df["Year"].min())}–{int(df["Year"].max())}</b> · <b>{len(df):,}</b> records<br>
+        <b>{sum(len(v) for v in catalog.values()):,}</b> country–crop pairs with {MIN_RECORDS}+ records
     </div>
-    """, unsafe_allow_html=True)
+    """)
+
+now = datetime.datetime.now()
+
+# ─────────────────────────── EMPTY STATE ───────────────────────────
+if not st.session_state.get("ready"):
+    html(f"""
+    <div class="af-empty">
+        <div class="af-empty-icon">{icon("leaf", 22)}</div>
+        <div class="af-empty-title">Analyse a crop</div>
+        <div class="af-empty-sub">Choose a country and crop in the sidebar, then select
+        <b>Run analysis</b> for yield trends, the food security outlook and risk alerts.</div>
+        <div class="af-empty-stats">
+            <div><b>{df["Country"].nunique()}</b><span>countries</span></div>
+            <div><b>{df["Crop"].nunique()}</b><span>crops</span></div>
+            <div><b>{int(df["Year"].max()) - int(df["Year"].min()) + 1}</b><span>years</span></div>
+            <div><b>{len(df):,}</b><span>records</span></div>
+        </div>
+    </div>
+    """)
     st.stop()
 
-# ─────────────────────────── FILTER ───────────────────────────
-data = df[(df["Country"] == country) & (df["Crop"] == crop)].sort_values("Year")
+st.query_params.from_dict({"country": country, "crop": crop})
 
-if len(data) < 3:
-    st.error("Not enough data for this combination. Please select another.")
-    st.stop()
+# ─────────────────────────── ANALYSIS ───────────────────────────
+data = pair_records(country, crop, start_year)
+latest, prev = data.iloc[-1], data.iloc[-2]
+year_val, prev_year = int(latest["Year"]), int(prev["Year"])
+years = data["Year"]
 
-if "Last 5" in period:
-    data = data[data["Year"] >= year_max - 4]
-elif "Last 3" in period:
-    data = data[data["Year"] >= year_max - 2]
+pred, p_up, used_model, n_outcomes = forecast(country, crop, start_year)
+slope, intercept, projections = yield_trend(data)
 
-# ─────────────────────────── MODEL ───────────────────────────
-data_model      = prepare_features(data)
-model, features = train_model(data_model)
-pred, prob      = predict(model, data_model, features)
-
-latest = data.iloc[-1]
-prev   = data.iloc[-2] if len(data) >= 2 else latest
-
-yield_change     = latest["Yield"] - prev["Yield"]
-yield_change_pct = (yield_change / prev["Yield"] * 100) if prev["Yield"] != 0 else 0
-arrow            = "▼" if yield_change < 0 else "▲"
-change_class     = "change-down" if yield_change < 0 else "change-up"
+avg_yield = data["Yield"].mean()
+loss_rate = data["LossRate"].mean()
+profit_margin = data["ProfitMargin"].mean()
 
 # ─────────────────────────── HEADER ───────────────────────────
-st.markdown(f"""
-<div class="agri-header">
-    <div class="agri-logo">
-        <div class="agri-logo-icon">AF</div>
-        <div>
-            <div class="agri-logo-title">AgriFlow <span>AI</span></div>
-            <div class="agri-logo-sub">Agricultural Intelligence Platform</div>
-        </div>
-    </div>
-    <div class="header-right">
-        <div class="date-widget">
-            <div class="date-widget-day">{now_day}</div>
-            <div class="date-widget-month">{now_month}</div>
-        </div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+fs_status = str(latest["FSStatus"])
+drought = str(latest["DroughtRisk"])
+region = latest.get("region")
+eyebrow = f"{region} · Crop intelligence" if isinstance(region, str) else "Crop intelligence"
 
-# ─────────────────────────── MAIN CARD ───────────────────────────
-prod_val    = f"{latest['Production']/1000:.1f}K MT" if latest['Production'] > 1000 else f"{latest['Production']:.0f} MT"
-rain_val    = f"{latest['Rainfall']:.0f} mm"
-temp_val    = f"{latest['Temperature']:.1f} C"
-fsi_val     = latest['FSI']
-year_val    = int(latest["Year"])
-price_val   = f"${latest['Price']:.0f}/MT"        if 'Price'        in latest.index else "N/A"
-trade_val   = f"${latest['TradeBalance']:.0f}M"    if 'TradeBalance' in latest.index else "N/A"
-drought_val = latest['DroughtRisk']                if 'DroughtRisk'  in latest.index else "N/A"
-fs_status   = latest['FSStatus']                  if 'FSStatus'     in latest.index \
-              else ("Food Secure" if fsi_val > 60 else "At Risk")
-fs_color    = "#1e8449" if "Secure"   in str(fs_status) \
-              else "#c87a00" if "Moderate" in str(fs_status) else "#c0392b"
-trade_color = "#1e8449" if latest.get('TradeBalance', 0) >= 0 else "#c0392b"
-
-st.markdown(f"""
-<div class="main-card">
-    <div class="main-card-top">
-        <div class="main-card-left">
-            <h4>Current Analysis — {country} / {crop} ({year_val})</h4>
-            <h1>{latest['Yield']:.2f} <span>MT/ha</span></h1>
-            <div class="{change_class}">
-                {arrow} {abs(yield_change_pct):.2f}% vs prev year &nbsp;
-                <span class="pill">{country}</span> &nbsp;
-                <span class="pill">{crop}</span>
-            </div>
-        </div>
-        <div class="main-stats">
-            <div class="stat-item">
-                <div class="stat-label">PRICE</div>
-                <div class="stat-value">{price_val}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">PRODUCTION</div>
-                <div class="stat-value">{prod_val}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">TRADE BALANCE</div>
-                <div class="stat-value" style="color:{trade_color}">{trade_val}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">FSI STATUS</div>
-                <div class="stat-value" style="color:{fs_color};">{fs_status}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">DROUGHT RISK</div>
-                <div class="stat-value">{drought_val}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">RAINFALL</div>
-                <div class="stat-value">{rain_val}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">TEMPERATURE</div>
-                <div class="stat-value">{temp_val}</div>
-            </div>
-        </div>
+html(f"""
+<div class="af-head">
+    <div>
+        <div class="af-eyebrow">{eyebrow}</div>
+        <div class="af-title">{crop} <span>in</span> {country}</div>
+        <div class="af-meta">{start_year}–{year_val} · {len(data)} annual records · latest record {year_val}</div>
+    </div>
+    <div class="af-chips">
+        <span class="af-chip {tone_for(fs_status, FS_TONES)}"><i></i>{fs_status}</span>
+        <span class="af-chip {tone_for(drought, DROUGHT_TONES)}"><i></i>Drought risk <b>{drought}</b></span>
     </div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
-# ─────────────────────────── FORECAST CARDS ───────────────────────────
-st.markdown('<div class="section-title">Forecast Summary</div>', unsafe_allow_html=True)
 
-def forecast_label(p): return "IMPROVING" if p == 1 else "DECLINING"
-def forecast_color(p): return "green"     if p == 1 else "amber"
+# ─────────────────────────── KPI STRIP ───────────────────────────
+def delta_html(change, text, good_when="up"):
+    if not np.isfinite(change) or change == 0:
+        return f'<div class="af-delta neutral">No change <span>vs {prev_year}</span></div>'
+    arrow = "▲" if change > 0 else "▼"
+    tone = "neutral" if good_when is None else ("good" if (change > 0) == (good_when == "up") else "bad")
+    return f'<div class="af-delta {tone}">{arrow} {text} <span>vs {prev_year}</span></div>'
 
-short_label  = forecast_label(pred)
-short_color  = forecast_color(pred)
-medium_pred  = 1 if prob > 0.4  else 0
-long_pred    = 1 if prob > 0.35 else 0
-medium_label = "STABLE" if abs(prob - 0.5) < 0.15 else forecast_label(medium_pred)
-long_label   = "STABLE" if abs(prob - 0.5) < 0.2  else forecast_label(long_pred)
-medium_color = long_color = "amber"
 
-short_conf  = prob * 100
-medium_conf = max(30, prob * 85)
-long_conf   = max(30, prob * 82)
+def pct_delta(cur, old, good_when="up"):
+    change = (cur - old) / abs(old) * 100 if old else float("nan")
+    return delta_html(change, f"{abs(change):.1f}%", good_when)
 
-est_yield      = latest["Yield"] * (1.03 if pred == 1 else 0.97)
-est_yield_med  = latest["Yield"] * 1.005
-est_yield_long = latest["Yield"] * 1.01
 
-col1, col2, col3 = st.columns(3)
+kpis = [
+    ("Yield", f"{latest['Yield']:.2f}", "MT/ha", pct_delta(latest["Yield"], prev["Yield"])),
+    ("Food security index", f"{latest['FSI']:.0f}", "/ 100",
+     delta_html(latest["FSI"] - prev["FSI"], f"{abs(latest['FSI'] - prev['FSI']):.0f} pts")),
+    ("Production", compact(latest["Production"]), "MT", pct_delta(latest["Production"], prev["Production"])),
+    ("Price", f"&#36;{latest['Price']:,.0f}", "/ MT", pct_delta(latest["Price"], prev["Price"], None)),
+    ("Trade balance", money_m(latest["TradeBalance"]), "",
+     delta_html(latest["TradeBalance"] - prev["TradeBalance"],
+                money_m(abs(latest["TradeBalance"] - prev["TradeBalance"])))),
+]
+html('<div class="af-kpis">' + "".join(
+    f'<div class="af-kpi"><div class="af-kpi-label">{label}</div>'
+    f'<div class="af-kpi-value">{value}<small>{unit}</small></div>{delta}</div>'
+    for label, value, unit, delta in kpis) + "</div>")
 
-for col, term, label, color, conf, est in [
-    (col1, "SHORT-TERM",  short_label,  short_color,  short_conf,  est_yield),
-    (col2, "MEDIUM-TERM", medium_label, medium_color, medium_conf, est_yield_med),
-    (col3, "LONG-TERM",   long_label,   long_color,   long_conf,   est_yield_long),
-]:
-    with col:
-        st.markdown(f"""
-        <div class="forecast-card fc-{color}">
-            <div class="fc-label">{term}</div>
-            <div class="fc-status-{color}">{label}</div>
-            <div class="fc-conf-bar-bg">
-                <div class="fc-conf-bar-{color}" style="width:{conf:.0f}%"></div>
-            </div>
-            <div class="fc-conf">Confidence: <b style="color:#1a3828">{conf:.1f}%</b></div>
-            <div class="fc-yield">Est. {est:.2f} MT/ha</div>
-        </div>
-        """, unsafe_allow_html=True)
+# ─────────────────────────── OUTLOOK ───────────────────────────
+if p_up >= 0.6:
+    fsi_tone, fsi_icon, fsi_text = "good", "up", "Likely to improve"
+elif p_up <= 0.4:
+    fsi_tone, fsi_icon, fsi_text = "bad", "down", "Likely to decline"
+else:
+    fsi_tone, fsi_icon, fsi_text = "neutral", "flat", "Too close to call"
 
-# ─────────────────────────── METRICS ───────────────────────────
-st.markdown('<div class="section-title">Key Metrics</div>', unsafe_allow_html=True)
+method = (f"RandomForest trained on <b>{n_outcomes}</b> year-to-year changes" if used_model
+          else f"History shows one outcome only, so this is the smoothed share of past rises ({n_outcomes} changes)")
 
-avg_yield     = data["Yield"].mean()
-profit_margin = data["ProfitMargin"].mean() if "ProfitMargin" in data.columns else 0
-loss_rate     = data["LossRate"].mean()     if "LossRate"     in data.columns else 0
-avg_fsi       = data["FSI"].mean()
-mechanization = latest["Mechanization"]     if "Mechanization" in latest.index else 0
-irrigation    = latest["Irrigation"]        if "Irrigation"    in latest.index else 0
-soil_health   = latest["SoilHealth"]        if "SoilHealth"    in latest.index else 0
-avg_temp      = data["Temperature"].mean()
+(y1, p1, lo1, hi1), (y3, p3, lo3, hi3) = projections
+trend_word = "rising" if slope > 0 else "falling" if slope < 0 else "flat"
 
-metric_data = [
-    ("AVG YIELD",     f"{avg_yield:.2f} MT/ha", "green",  f"Peak: {data['Yield'].max():.2f}"),
-    ("PROFIT MARGIN", f"{profit_margin:.1f}%",  "green",  "Avg over period"),
-    ("LOSS RATE",     f"{loss_rate:.1f}%",       "amber",  "Post-harvest"),
-    ("AVG FSI",       f"{avg_fsi:.1f}",          "blue",   "Food Security"),
-    ("MECHANIZATION", f"{mechanization:.0f}%",   "purple", "Farm coverage"),
-    ("IRRIGATION",    f"{irrigation:.0f}%",      "blue",   "Irrigated area"),
-    ("SOIL HEALTH",   f"{soil_health:.0f}/100",  "green",  "Composite score"),
-    ("AVG TEMP",      f"{avg_temp:.1f} C",       "white",  f"Min: {data['Temperature'].min():.1f}"),
+
+def projection_panel(label, year, mid, lo, hi, horizon):
+    tone = "good" if mid > latest["Yield"] else "bad" if mid < latest["Yield"] else "neutral"
+    arrow = "up" if tone == "good" else "down" if tone == "bad" else "flat"
+    change = (mid - latest["Yield"]) / latest["Yield"] * 100 if latest["Yield"] else 0
+    return f"""
+    <div class="af-panel">
+        <div class="af-panel-label">{label}<span class="af-tag">{horizon}</span></div>
+        <div class="af-outlook-value"><span class="ic {tone}">{icon(arrow)}</span>
+            {mid:.2f}<small>MT/ha · {change:+.1f}%</small></div>
+        <div class="af-panel-foot">Likely range <b>{lo:.2f}–{hi:.2f}</b> MT/ha by {year}.<br>
+        Linear trend, {trend_word} <b>{slope:+.3f}</b> MT/ha per year.</div>
+    </div>"""
+
+
+html(f'<div class="af-section">Outlook<span>Forecasts from the {start_year}–{year_val} records</span></div>')
+html(f"""
+<div class="af-outlook">
+    <div class="af-panel">
+        <div class="af-panel-label">Food security index<span class="af-tag">Next record</span></div>
+        <div class="af-outlook-value"><span class="ic {fsi_tone}">{icon(fsi_icon)}</span>{fsi_text}</div>
+        <div class="af-bar"><span style="width:{p_up * 100:.0f}%"></span></div>
+        <div class="af-panel-foot"><b>{p_up * 100:.0f}%</b> chance the index rises from {latest['FSI']:.0f}.<br>{method}.</div>
+    </div>
+    {projection_panel("Yield projection", y1, p1, lo1, hi1, str(y1))}
+    {projection_panel("Yield projection", y3, p3, lo3, hi3, str(y3))}
+</div>
+""")
+
+# ─────────────────────────── ALERTS & INSIGHTS ───────────────────────────
+alerts = []
+drought_level = drought.lower()
+if drought_level in ("critical", "extreme", "high"):
+    alerts.append(("bad", f"{drought} drought risk", "High",
+                   "Prioritise drought-tolerant varieties and water-saving irrigation."))
+elif drought_level in ("moderate", "medium"):
+    alerts.append(("warn", "Moderate drought risk", "Medium",
+                   "Monitor soil moisture and plan contingency irrigation."))
+
+fsi_change = data["FSI"].iloc[-1] - data["FSI"].iloc[-3 if len(data) >= 3 else -2]
+if fsi_change < -5:
+    alerts.append(("bad", "Food security index falling", "High",
+                   f"Down <b>{abs(fsi_change):.0f} pts</b> over the last records. Policy support may be needed."))
+elif fsi_change < 0:
+    alerts.append(("warn", "Food security index under pressure", "Medium",
+                   f"Down <b>{abs(fsi_change):.0f} pts</b> over the last records. Watch supply closely."))
+
+if loss_rate > 15:
+    alerts.append(("bad", "High post-harvest loss", "High",
+                   f"Average loss of <b>{loss_rate:.1f}%</b>. Invest in cold chain and storage."))
+elif loss_rate > 8:
+    alerts.append(("warn", "Elevated post-harvest loss", "Medium",
+                   f"Average loss of <b>{loss_rate:.1f}%</b>. Review storage and transport."))
+
+if p_up >= 0.65:
+    alerts.append(("good", "Positive food security outlook", "Info",
+                   f"<b>{p_up * 100:.0f}%</b> chance the index rises by the next record."))
+elif p_up <= 0.35:
+    alerts.append(("warn", "Negative food security outlook", "Medium",
+                   f"Only <b>{p_up * 100:.0f}%</b> chance the index rises by the next record."))
+
+if not alerts:
+    alerts.append(("good", "All indicators normal", "Info",
+                   "No critical risk factors detected. Continue standard monitoring."))
+
+yield_vs_avg = (latest["Yield"] - avg_yield) / avg_yield * 100 if avg_yield else 0
+best = data.loc[data["Yield"].idxmax()]
+worst = data.loc[data["Yield"].idxmin()]
+rain_r = data["Rainfall"].corr(data["Yield"]) if data["Rainfall"].nunique() > 1 else float("nan")
+r_text = f" <small>(r = {rain_r:.2f})</small>" if np.isfinite(rain_r) else ""
+
+insights = [
+    ("Latest yield vs average", f"{abs(yield_vs_avg):.1f}% {'above' if yield_vs_avg >= 0 else 'below'}"),
+    ("Best year", f"{int(best['Year'])} <small>· {best['Yield']:.2f} MT/ha</small>"),
+    ("Weakest year", f"{int(worst['Year'])} <small>· {worst['Yield']:.2f} MT/ha</small>"),
+    ("Rainfall–yield link", f"{correlation_label(rain_r)}{r_text}"),
+    ("Average profit margin", f"{profit_margin:.1f}%"),
+    ("Records analysed", f"{len(data)} <small>· {start_year}–{year_val}</small>"),
 ]
 
-cols = st.columns(8)
-for i, (label, value, color, sub) in enumerate(metric_data):
-    with cols[i]:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="mc-label">{label}</div>
-            <div class="mc-value-{color}">{value}</div>
-            <div class="mc-sub">{sub}</div>
-        </div>
-        """, unsafe_allow_html=True)
 
-# ─────────────────────────── YIELD CHART ───────────────────────────
-st.markdown('<div class="section-title">Yield Performance</div>', unsafe_allow_html=True)
+def rows_html(pairs):
+    return "".join(f'<div class="af-row"><span class="k">{k}</span><span class="v">{v}</span></div>'
+                   for k, v in pairs)
 
-CHART_BG   = "rgba(0,0,0,0)"
-GRID_COLOR = "#e8f5e9"
-TICK_COLOR = "#6a9a7a"
-HOVER_BG   = "#ffffff"
 
-chart_col, side_col = st.columns([3, 1])
+# ─────────────────────────── TABS ───────────────────────────
+st.write("")
+tab_overview, tab_climate, tab_econ, tab_compare, tab_data = st.tabs(
+    ["Overview", "Climate", "Economics", "Compare", "Data"])
 
-with chart_col:
-    st.markdown('<div class="chart-outer">', unsafe_allow_html=True)
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=data["Year"], y=data["Yield"],
-        mode="lines+markers", name="Yield (MT/ha)",
-        line=dict(color="#2e8b57", width=3),
-        marker=dict(size=8, color="#2e8b57", line=dict(color="#ffffff", width=2.5)),
-        fill="tozeroy", fillcolor="rgba(76,175,125,0.12)"
-    ))
-    if len(data) >= 3:
-        roll = data["Yield"].rolling(3, center=True).mean()
-        fig.add_trace(go.Scatter(
-            x=data["Year"], y=roll, mode="lines", name="3-Year Avg",
-            line=dict(color="#1565c0", width=2, dash="dot"), opacity=0.9
-        ))
-    fig.add_trace(go.Scatter(
-        x=data["Year"], y=data["FSI"], mode="lines", name="FSI Score",
-        line=dict(color="#6a1b9a", width=2, dash="dash"),
-        yaxis="y2", opacity=0.8
-    ))
-    fig.update_layout(
-        template="plotly_white", paper_bgcolor=CHART_BG, plot_bgcolor="#fafffe",
-        height=320, margin=dict(l=10, r=10, t=10, b=10),
-        legend=dict(orientation="h", x=0, y=1.12,
-                    font=dict(size=11, color=TICK_COLOR), bgcolor="rgba(0,0,0,0)"),
-        xaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR), zeroline=False,
-                   linecolor="#a5d6a7", linewidth=2),
-        yaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR), zeroline=False,
-                   title=dict(text="MT/ha", font=dict(color=TICK_COLOR, size=10)),
-                   linecolor="#a5d6a7", linewidth=2),
-        yaxis2=dict(overlaying="y", side="right", zeroline=False, gridcolor="rgba(0,0,0,0)",
-                    tickfont=dict(color="#6a1b9a", size=9),
-                    title=dict(text="FSI", font=dict(color="#6a1b9a", size=10))),
-        hovermode="x unified",
-        hoverlabel=dict(bgcolor="#fff", bordercolor="#2e8b57",
-                        font=dict(color="#1a3828", size=12))
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+with tab_overview:
+    left, right = st.columns([2, 1], gap="medium")
+    with left:
+        with card("yield", "Yield", "MT per hectare, with linear trend and projections"):
+            fit_x = [years.iloc[0], year_val]
+            fig = go.Figure()
+            fig.add_scatter(x=fit_x, y=[slope * x + intercept for x in fit_x], name="Trend", mode="lines",
+                            line=dict(color=TREND, width=1.5), hoverinfo="skip")
+            fig.add_scatter(x=[year_val, y3], y=[slope * year_val + intercept, slope * y3 + intercept],
+                            mode="lines", line=dict(color=TREND, width=1.5, dash="dot"),
+                            hoverinfo="skip", showlegend=False)
+            fig.add_scatter(x=[y1, y3], y=[p1, p3], name="Projection", mode="markers",
+                            marker=dict(size=9, color="#ffffff", line=dict(color=INK_2, width=2)),
+                            error_y=dict(type="data", symmetric=False, array=[hi1 - p1, hi3 - p3],
+                                         arrayminus=[p1 - lo1, p3 - lo3], color=TREND, thickness=1.5, width=5),
+                            hovertemplate="%{y:.2f} MT/ha<extra>Projection</extra>")
+            fig.add_trace(line(years, data["Yield"], "Yield", GREEN, "MT/ha"))
+            render_chart(fig, years=np.array([years.iloc[0], y3]), height=290, legend=True)
 
-with side_col:
-    for val, label, color, bg in [
-        (mechanization, "MECH",  "#1565c0", "#e3f2fd"),
-        (irrigation,    "IRRIG", "#2e8b57", "#e8f5e9")
-    ]:
-        st.markdown('<div class="donut-wrap">', unsafe_allow_html=True)
-        fig_d = go.Figure()
-        fig_d.add_trace(go.Pie(
-            values=[val, 100 - val], labels=[label, "Other"],
-            hole=0.68, marker=dict(colors=[color, "#e8f5e9"],
-                                   line=dict(color=["#ffffff","#ffffff"], width=2)),
-            textinfo="none", hoverinfo="label+percent"
-        ))
-        fig_d.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            showlegend=False, height=150, margin=dict(l=0, r=0, t=0, b=0),
-            annotations=[dict(
-                text=f"<b>{val:.0f}%</b><br><span style='font-size:9px;color:#6a9a7a'>{label}</span>",
-                showarrow=False, font=dict(color=color, size=15)
-            )]
-        )
-        st.plotly_chart(fig_d, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    with right:
+        with card("alerts", "Risk alerts", f"{len(alerts)} active for the latest record"):
+            html("".join(
+                f'<div class="af-alert"><span class="ic {tone}">{icon("check" if tone == "good" else "alert")}</span>'
+                f'<div><div class="af-alert-title">{title}<span class="af-sev {tone}">{sev}</span></div>'
+                f'<div class="af-alert-body">{body}</div></div></div>'
+                for tone, title, sev, body in alerts))
 
-# ─────────────────────────── CLIMATE & PRODUCTION ───────────────────────────
-st.markdown('<div class="section-title">Climate & Production</div>', unsafe_allow_html=True)
+    left, right = st.columns([2, 1], gap="medium")
+    with left:
+        with card("fsi", "Food security index", "Score out of 100"):
+            fig = go.Figure(line(years, data["FSI"], "FSI", VIOLET, "", fmt=".0f"))
+            render_chart(fig, years=years, height=250, y_range=[0, 100])
+    with right:
+        with card("insights", "Insights", f"{crop} in {country}, {start_year}–{year_val}"):
+            html(rows_html(insights))
 
-c1, c2 = st.columns(2)
-
-with c1:
-    st.markdown('<div class="chart-outer">', unsafe_allow_html=True)
-    fig_clim = go.Figure()
-    fig_clim.add_trace(go.Bar(
-        x=data["Year"], y=data["Rainfall"], name="Rainfall (mm)",
-        marker=dict(color="#1565c0", line=dict(color="#0d47a1", width=1))
-    ))
-    fig_clim.add_trace(go.Scatter(
-        x=data["Year"], y=data["Temperature"], mode="lines+markers", name="Temp (C)",
-        line=dict(color="#c0392b", width=2.5),
-        marker=dict(size=6, color="#c0392b", line=dict(color="#fff", width=2)),
-        yaxis="y2"
-    ))
-    fig_clim.update_layout(
-        template="plotly_white", paper_bgcolor=CHART_BG, plot_bgcolor="#fafffe",
-        height=260, margin=dict(l=10, r=10, t=10, b=10),
-        legend=dict(orientation="h", x=0, y=1.15,
-                    font=dict(size=10, color=TICK_COLOR), bgcolor="rgba(0,0,0,0)"),
-        xaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR), zeroline=False,
-                   linecolor="#a5d6a7", linewidth=2),
-        yaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR),
-                   title=dict(text="Rainfall mm", font=dict(color=TICK_COLOR, size=10)),
-                   linecolor="#a5d6a7", linewidth=2),
-        yaxis2=dict(overlaying="y", side="right", tickfont=dict(color="#c0392b", size=9),
-                    title=dict(text="Temp C", font=dict(color="#c0392b", size=10)),
-                    gridcolor="rgba(0,0,0,0)"),
-        hovermode="x unified", bargap=0.25,
-        hoverlabel=dict(bgcolor="#fff", bordercolor="#2e8b57", font=dict(color="#1a3828"))
-    )
-    st.plotly_chart(fig_clim, use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with c2:
-    st.markdown('<div class="chart-outer">', unsafe_allow_html=True)
-    fig_prod = go.Figure()
-    fig_prod.add_trace(go.Bar(
-        x=data["Year"], y=data["Production"], name="Production (MT)",
-        marker=dict(color="#2e8b57", line=dict(color="#1a5c38", width=1))
-    ))
-    if "ProfitMargin" in data.columns:
-        fig_prod.add_trace(go.Scatter(
-            x=data["Year"], y=data["ProfitMargin"], mode="lines+markers",
-            name="Profit Margin %",
-            line=dict(color="#c87a00", width=2.5),
-            marker=dict(size=6, color="#c87a00", line=dict(color="#fff", width=2)),
-            yaxis="y2"
-        ))
-    fig_prod.update_layout(
-        template="plotly_white", paper_bgcolor=CHART_BG, plot_bgcolor="#fafffe",
-        height=260, margin=dict(l=10, r=10, t=10, b=10),
-        legend=dict(orientation="h", x=0, y=1.15,
-                    font=dict(size=10, color=TICK_COLOR), bgcolor="rgba(0,0,0,0)"),
-        xaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR), zeroline=False,
-                   linecolor="#a5d6a7", linewidth=2),
-        yaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR),
-                   title=dict(text="Production MT", font=dict(color=TICK_COLOR, size=10)),
-                   linecolor="#a5d6a7", linewidth=2),
-        yaxis2=dict(overlaying="y", side="right", tickfont=dict(color="#c87a00", size=9),
-                    title=dict(text="Margin %", font=dict(color="#c87a00", size=10)),
-                    gridcolor="rgba(0,0,0,0)"),
-        hovermode="x unified", bargap=0.25,
-        hoverlabel=dict(bgcolor="#fff", bordercolor="#2e8b57", font=dict(color="#1a3828"))
-    )
-    st.plotly_chart(fig_prod, use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# ─────────────────────────── CROP COMPARISON ───────────────────────────
-if compare_enabled and compare_crop:
-    st.markdown('<div class="section-title">Crop Comparison</div>', unsafe_allow_html=True)
-
-    data_b = df[(df["Country"] == country) & (df["Crop"] == compare_crop)].sort_values("Year")
-    if "Last 5" in period:
-        data_b = data_b[data_b["Year"] >= year_max - 4]
-    elif "Last 3" in period:
-        data_b = data_b[data_b["Year"] >= year_max - 2]
-
-    if len(data_b) >= 2:
-        st.markdown('<div class="chart-outer">', unsafe_allow_html=True)
-        fig_cmp = go.Figure()
-        fig_cmp.add_trace(go.Scatter(
-            x=data["Year"], y=data["Yield"], mode="lines+markers", name=crop,
-            line=dict(color="#2e8b57", width=3),
-            marker=dict(size=7, color="#2e8b57", line=dict(color="#fff", width=2))
-        ))
-        fig_cmp.add_trace(go.Scatter(
-            x=data_b["Year"], y=data_b["Yield"], mode="lines+markers", name=compare_crop,
-            line=dict(color="#c0392b", width=3),
-            marker=dict(size=7, color="#c0392b", line=dict(color="#fff", width=2))
-        ))
-        fig_cmp.update_layout(
-            template="plotly_white", paper_bgcolor=CHART_BG, plot_bgcolor="#fafffe",
-            height=240, margin=dict(l=10, r=10, t=10, b=10),
-            legend=dict(orientation="h", x=0, y=1.15,
-                        font=dict(size=11, color=TICK_COLOR), bgcolor="rgba(0,0,0,0)"),
-            xaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR), zeroline=False,
-                       linecolor="#a5d6a7", linewidth=2),
-            yaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR),
-                       title=dict(text="MT/ha", font=dict(color=TICK_COLOR, size=10)),
-                       linecolor="#a5d6a7", linewidth=2),
-            hovermode="x unified",
-            hoverlabel=dict(bgcolor="#fff", bordercolor="#2e8b57", font=dict(color="#1a3828"))
-        )
-        st.plotly_chart(fig_cmp, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        lat_b = data_b.iloc[-1]
-        rows  = [
-            ("Yield (MT/ha)", f"{latest['Yield']:.2f}",               f"{lat_b['Yield']:.2f}"),
-            ("FSI Score",     f"{latest['FSI']:.1f}",                 f"{lat_b['FSI']:.1f}"),
-            ("Rainfall (mm)", f"{latest['Rainfall']:.0f}",            f"{lat_b['Rainfall']:.0f}"),
-            ("Profit Margin", f"{latest.get('ProfitMargin',0):.1f}%", f"{lat_b.get('ProfitMargin',0):.1f}%"),
-        ]
-        rows_html = "".join(
-            f"<tr><td>{r[0]}</td>"
-            f"<td style='color:#1e8449;font-weight:700'>{r[1]}</td>"
-            f"<td style='color:#c0392b;font-weight:700'>{r[2]}</td></tr>"
-            for r in rows
-        )
-        st.markdown(f"""
-        <table class="compare-table">
-          <thead><tr><th>Metric</th><th>{crop}</th><th>{compare_crop}</th></tr></thead>
-          <tbody>{rows_html}</tbody>
-        </table>
-        """, unsafe_allow_html=True)
-
-# ─────────────────────────── RISK ALERTS & INSIGHTS ───────────────────────────
-st.markdown('<div class="section-title">Risk Alerts & Insights</div>', unsafe_allow_html=True)
-
-alert_col, insight_col = st.columns([1, 1])
-
-with alert_col:
-    alerts = []
-    dr = str(latest.get("DroughtRisk", "")).lower()
-
-    if "high" in dr or "extreme" in dr:
-        alerts.append(("high", "High Drought Risk",
-            f"Current drought risk is classified as <b>{latest['DroughtRisk']}</b>. "
-            "Consider drought-resistant varieties and water-saving irrigation."))
-    elif "moderate" in dr or "medium" in dr:
-        alerts.append(("medium", "Moderate Drought Risk",
-            f"Drought risk is <b>{latest['DroughtRisk']}</b>. "
-            "Monitor soil moisture and plan contingency irrigation."))
-
-    if len(data) >= 2:
-        fsi_trend = (data["FSI"].iloc[-1] - data["FSI"].iloc[-3]
-                     if len(data) >= 3 else data["FSI"].iloc[-1] - data["FSI"].iloc[-2])
-        if fsi_trend < -5:
-            alerts.append(("high", "FSI Declining",
-                f"Food Security Index dropped by <b>{abs(fsi_trend):.1f} pts</b>. "
-                "Policy intervention may be needed."))
-        elif fsi_trend < 0:
-            alerts.append(("medium", "FSI Under Pressure",
-                f"Food Security Index decreased by <b>{abs(fsi_trend):.1f} pts</b>. "
-                "Closely monitor supply chain."))
-
-    if loss_rate > 15:
-        alerts.append(("high", "High Post-Harvest Loss",
-            f"Loss rate of <b>{loss_rate:.1f}%</b> is above threshold. "
-            "Invest in cold-chain and storage infrastructure."))
-    elif loss_rate > 8:
-        alerts.append(("medium", "Elevated Loss Rate",
-            f"Loss rate of <b>{loss_rate:.1f}%</b>. "
-            "Explore improved storage and transport options."))
-
-    if pred == 1 and prob > 0.65:
-        alerts.append(("low", "Strong Positive Forecast",
-            f"Model predicts <b>improving FSI</b> with <b>{prob*100:.0f}% confidence</b>. "
-            "Favorable conditions ahead."))
-
-    if not alerts:
-        alerts.append(("low", "All Indicators Normal",
-            "No critical risk factors detected. Continue standard monitoring."))
-
-    for level, title, body in alerts:
-        st.markdown(f"""
-        <div class="alert-card alert-{level}">
-            <div class="alert-dot-{level}"></div>
-            <div>
-                <div class="alert-title">{title}</div>
-                <div class="alert-body">{body}</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-with insight_col:
-    yield_vs_avg    = ((latest["Yield"] - avg_yield) / avg_yield * 100) if avg_yield else 0
-    best_year       = data.loc[data["Yield"].idxmax(), "Year"]
-    worst_year      = data.loc[data["Yield"].idxmin(), "Year"]
-    rain_yield_corr = data[["Rainfall", "Yield"]].corr().iloc[0, 1] if len(data) >= 3 else 0
-    corr_str        = "Positive" if rain_yield_corr > 0.3 \
-                      else "Negative" if rain_yield_corr < -0.3 else "Weak"
-    dir_color       = "#1e8449" if yield_vs_avg >= 0 else "#c0392b"
-    dir_word        = "above" if yield_vs_avg >= 0 else "below"
-
-    insights = [
-        ("Current yield vs average",
-         f"<span style='color:{dir_color};font-weight:700'>{abs(yield_vs_avg):.1f}% {dir_word}</span>"),
-        ("Best performance year",
-         f"<span style='color:#1e8449;font-weight:700'>{int(best_year)}</span>"
-         f"<span style='color:#3a5a3a'> — {data['Yield'].max():.2f} MT/ha</span>"),
-        ("Weakest performance year",
-         f"<span style='color:#c0392b;font-weight:700'>{int(worst_year)}</span>"
-         f"<span style='color:#3a5a3a'> — {data['Yield'].min():.2f} MT/ha</span>"),
-        ("Rainfall-yield correlation",
-         f"<span style='color:#1565c0;font-weight:700'>{corr_str}</span>"
-         f"<span style='color:#3a5a3a'> (r = {rain_yield_corr:.2f})</span>"),
-        ("Model confidence",
-         f"<span style='color:#6a1b9a;font-weight:700'>{prob*100:.1f}%</span>"
-         f" — {'High' if prob>0.7 else 'Moderate' if prob>0.5 else 'Low'} reliability"),
-        ("Years of data analyzed",
-         f"<span style='font-weight:700;color:#1a3828'>{len(data)}</span>"),
+    meters = [
+        ("Mechanization", latest["Mechanization"], "%", "Share of farm work mechanized", latest["Mechanization"]),
+        ("Irrigation", latest["Irrigation"], "%", "Share of area irrigated", latest["Irrigation"]),
+        ("Soil health", latest["SoilHealth"], "/ 100", "Composite soil score", latest["SoilHealth"]),
+        ("Post-harvest loss", latest["LossRate"], "%", "Lower is better", min(latest["LossRate"] * 2.5, 100)),
     ]
+    with card("ops", "Farm operations", f"Latest record, {year_val}"):
+        html('<div class="af-meters">' + "".join(
+            f'<div class="af-meter"><div class="af-meter-top"><span class="af-meter-label">{label}</span>'
+            f'<span class="af-meter-value">{value:.0f}<small>{unit}</small></span></div>'
+            f'<div class="af-bar"><span style="width:{width:.0f}%"></span></div>'
+            f'<div class="af-meter-note">{note}</div></div>'
+            for label, value, unit, note, width in meters) + "</div>")
 
-    rows_html = "".join(
-        f"<div class='insight-item'>"
-        f"<span class='insight-key'>{k}</span>"
-        f"<span class='insight-val'>{v}</span>"
-        f"</div>"
-        for k, v in insights
+with tab_climate:
+    c1, c2 = st.columns(2, gap="medium")
+    with c1:
+        with card("rain", "Annual rainfall", "Millimetres"):
+            render_chart(go.Figure(bars(years, data["Rainfall"], "Rainfall", BLUE, "mm")), years=years)
+    with c2:
+        with card("temp", "Average temperature", "Degrees Celsius"):
+            render_chart(go.Figure(line(years, data["Temperature"], "Temperature", ORANGE, "°C", fmt=".1f")),
+                         years=years)
+
+    c1, c2 = st.columns(2, gap="medium")
+    with c1:
+        with card("scatter", "Rainfall vs yield",
+                  "Each point is one year" + (f" · r = {rain_r:.2f}" if np.isfinite(rain_r) else "")):
+            fig = go.Figure()
+            if np.isfinite(rain_r):
+                m, b = np.polyfit(data["Rainfall"], data["Yield"], 1)
+                rx = np.array([data["Rainfall"].min(), data["Rainfall"].max()])
+                fig.add_scatter(x=rx, y=m * rx + b, mode="lines", line=dict(color=TREND, width=1.5),
+                                hoverinfo="skip")
+            fig.add_scatter(x=data["Rainfall"], y=data["Yield"], mode="markers", customdata=years,
+                            marker=dict(size=10, color=GREEN, line=dict(color="#ffffff", width=2)),
+                            hovertemplate="%{customdata}<br>Rainfall %{x:,.0f} mm<br>Yield %{y:.2f} MT/ha<extra></extra>")
+            fig.update_xaxes(title=dict(text="Rainfall (mm)", font=dict(size=11, color=MUTED)))
+            render_chart(fig, height=250, hovermode="closest")
+    with c2:
+        with card("profile", "Climate profile", f"Latest record, {year_val}"):
+            profile = [("Drought risk", drought)]
+            for col, label in [("climate_zone", "Climate zone"),
+                               ("climate_vulnerability", "Climate vulnerability score"),
+                               ("flood_risk_score", "Flood risk score"),
+                               ("drought_freq_per10yr", "Droughts per decade")]:
+                if col in latest.index:
+                    profile.append((label, latest[col]))
+            profile.append(("Average rainfall", f"{data['Rainfall'].mean():,.0f} <small>mm</small>"))
+            profile.append(("Average temperature", f"{data['Temperature'].mean():.1f} <small>°C</small>"))
+            html(rows_html(profile))
+
+with tab_econ:
+    c1, c2 = st.columns(2, gap="medium")
+    with c1:
+        with card("prod", "Production", "Metric tonnes"):
+            render_chart(go.Figure(bars(years, data["Production"], "Production", GREEN, "MT")), years=years)
+    with c2:
+        with card("price", "Price", "USD per metric tonne"):
+            render_chart(go.Figure(line(years, data["Price"], "Price", GREEN, "USD/MT", fmt=",.0f")),
+                         years=years)
+    c1, c2 = st.columns(2, gap="medium")
+    with c1:
+        with card("margin", "Profit margin", "Percent of revenue"):
+            render_chart(go.Figure(bars(years, data["ProfitMargin"], "Profit margin", GREEN, "%", fmt=".1f")),
+                         years=years, zero_line=True)
+    with c2:
+        with card("trade", "Trade balance", "Exports minus imports, USD millions"):
+            surplus = data["TradeBalance"].where(data["TradeBalance"] >= 0)
+            deficit = data["TradeBalance"].where(data["TradeBalance"] < 0)
+            fig = go.Figure([bars(years, surplus, "Surplus", BLUE, "USD M"),
+                             bars(years, deficit, "Deficit", RED, "USD M")])
+            fig.update_layout(barmode="relative")
+            render_chart(fig, years=years, legend=True, zero_line=True)
+
+with tab_compare:
+    if not compare_crop:
+        st.info("Turn on **Compare with another crop** in the sidebar to compare yields.",
+                icon=":material/compare_arrows:")
+    else:
+        data_b = pair_records(country, compare_crop, start_year)
+        data_b = data_b[data_b["Year"] <= year_val]
+        if len(data_b) < 2:
+            st.info(f"{compare_crop} has fewer than 2 records in {start_year}–{year_val}. Try a longer period.",
+                    icon=":material/info:")
+        else:
+            with card("compare", f"Yield: {crop} vs {compare_crop}", "MT per hectare"):
+                fig = go.Figure([line(years, data["Yield"], crop, GREEN, "MT/ha"),
+                                 line(data_b["Year"], data_b["Yield"], compare_crop, BLUE, "MT/ha",
+                                      symbol="square")])
+                span_years = np.array([min(years.min(), data_b["Year"].min()), year_val])
+                render_chart(fig, years=span_years, height=280, legend=True)
+
+            slope_b = np.polyfit(data_b["Year"], data_b["Yield"], 1)[0]
+            lat_b = data_b.iloc[-1]
+            rows = [
+                ("Latest record", f"{year_val}", f"{int(lat_b['Year'])}"),
+                ("Yield, latest (MT/ha)", f"{latest['Yield']:.2f}", f"{lat_b['Yield']:.2f}"),
+                ("Yield, period average", f"{avg_yield:.2f}", f"{data_b['Yield'].mean():.2f}"),
+                ("Yield trend (MT/ha per year)", f"{slope:+.3f}", f"{slope_b:+.3f}"),
+                ("Food security index, latest", f"{latest['FSI']:.0f}", f"{lat_b['FSI']:.0f}"),
+                ("Profit margin, average", f"{profit_margin:.1f}%", f"{data_b['ProfitMargin'].mean():.1f}%"),
+                ("Post-harvest loss, average", f"{loss_rate:.1f}%", f"{data_b['LossRate'].mean():.1f}%"),
+            ]
+            with card("compare-table", "Side by side", f"{start_year}–{year_val}"):
+                html(f"""
+                <table class="af-table">
+                    <thead><tr><th>Metric</th>
+                    <th><span class="af-swatch" style="background:{GREEN}"></span>{crop}</th>
+                    <th><span class="af-swatch" style="background:{BLUE}"></span>{compare_crop}</th></tr></thead>
+                    <tbody>{"".join(f"<tr><td>{a}</td><td>{b}</td><td>{c}</td></tr>" for a, b, c in rows)}</tbody>
+                </table>
+                """)
+
+with tab_data:
+    table = data[["Year", "Yield", "Production", "FSI", "FSStatus", "DroughtRisk", "Rainfall", "Temperature",
+                  "Price", "TradeBalance", "ProfitMargin", "LossRate", "Irrigation", "Mechanization",
+                  "SoilHealth"]]
+    st.dataframe(
+        table, hide_index=True, width="stretch",
+        column_config={
+            "Year": st.column_config.NumberColumn(format="%d"),
+            "Yield": st.column_config.NumberColumn("Yield (MT/ha)", format="%.2f"),
+            "Production": st.column_config.NumberColumn("Production (MT)", format="localized"),
+            "FSI": st.column_config.NumberColumn("FSI", format="%.0f"),
+            "FSStatus": "Food security status",
+            "DroughtRisk": "Drought risk",
+            "Rainfall": st.column_config.NumberColumn("Rainfall (mm)", format="localized"),
+            "Temperature": st.column_config.NumberColumn("Temp (°C)", format="%.1f"),
+            "Price": st.column_config.NumberColumn("Price (USD/MT)", format="localized"),
+            "TradeBalance": st.column_config.NumberColumn("Trade balance (USD M)", format="localized"),
+            "ProfitMargin": st.column_config.NumberColumn("Profit margin (%)", format="%.1f"),
+            "LossRate": st.column_config.NumberColumn("Loss rate (%)", format="%.1f"),
+            "Irrigation": st.column_config.NumberColumn("Irrigation (%)", format="%.0f"),
+            "Mechanization": st.column_config.NumberColumn("Mechanization (%)", format="%.0f"),
+            "SoilHealth": st.column_config.NumberColumn("Soil health", format="%.0f"),
+        },
     )
-    st.markdown(f"""
-    <div class="insight-card">
-        <div class="insight-title">AI Insights — {country} / {crop}</div>
-        {rows_html}
-    </div>
-    """, unsafe_allow_html=True)
-
-# ─────────────────────────── TRADE & ECONOMICS ───────────────────────────
-if "TradeBalance" in data.columns and data["TradeBalance"].sum() != 0:
-    st.markdown('<div class="section-title">Trade & Economics</div>', unsafe_allow_html=True)
-
-    t1, t2, t3 = st.columns(3)
-
-    with t1:
-        st.markdown('<div class="trade-label">Trade Balance</div>', unsafe_allow_html=True)
-        st.markdown('<div class="chart-outer">', unsafe_allow_html=True)
-        colors_tb = ["#2e8b57" if v >= 0 else "#c0392b" for v in data["TradeBalance"]]
-        fig_trade = go.Figure(go.Bar(
-            x=data["Year"], y=data["TradeBalance"],
-            marker=dict(color=colors_tb, line=dict(
-                color=["#1a5c38" if v >= 0 else "#7b241c" for v in data["TradeBalance"]],
-                width=1.5))
-        ))
-        fig_trade.update_layout(
-            template="plotly_white", paper_bgcolor=CHART_BG, plot_bgcolor="#fafffe",
-            height=200, margin=dict(l=10, r=10, t=10, b=10),
-            xaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR), zeroline=False,
-                       linecolor="#a5d6a7", linewidth=2),
-            yaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR),
-                       title=dict(text="USD M", font=dict(color=TICK_COLOR, size=10)),
-                       zeroline=True, zerolinecolor="#a5d6a7", zerolinewidth=2,
-                       linecolor="#a5d6a7", linewidth=2),
-            showlegend=False,
-            hoverlabel=dict(bgcolor="#fff", bordercolor="#2e8b57", font=dict(color="#1a3828"))
-        )
-        st.plotly_chart(fig_trade, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with t2:
-        if "Price" in data.columns and data["Price"].sum() != 0:
-            st.markdown('<div class="trade-label">Price Trend ($/MT)</div>', unsafe_allow_html=True)
-            st.markdown('<div class="chart-outer">', unsafe_allow_html=True)
-            fig_price = go.Figure(go.Scatter(
-                x=data["Year"], y=data["Price"],
-                mode="lines+markers", fill="tozeroy",
-                line=dict(color="#c87a00", width=3),
-                marker=dict(size=7, color="#c87a00", line=dict(color="#fff", width=2)),
-                fillcolor="rgba(200,122,0,0.1)"
-            ))
-            fig_price.update_layout(
-                template="plotly_white", paper_bgcolor=CHART_BG, plot_bgcolor="#fafffe",
-                height=200, margin=dict(l=10, r=10, t=10, b=10),
-                xaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR), zeroline=False,
-                           linecolor="#a5d6a7", linewidth=2),
-                yaxis=dict(gridcolor=GRID_COLOR, tickfont=dict(color=TICK_COLOR),
-                           title=dict(text="$/MT", font=dict(color=TICK_COLOR, size=10)),
-                           linecolor="#a5d6a7", linewidth=2),
-                showlegend=False,
-                hoverlabel=dict(bgcolor="#fff", bordercolor="#2e8b57", font=dict(color="#1a3828"))
-            )
-            st.plotly_chart(fig_price, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    with t3:
-        st.markdown('<div class="trade-label">Profit Margin Gauge</div>', unsafe_allow_html=True)
-        st.markdown('<div class="chart-outer">', unsafe_allow_html=True)
-        pm       = profit_margin
-        color_pm = "#1e8449" if pm > 30 else "#c87a00" if pm > 15 else "#c0392b"
-        fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=pm,
-            number=dict(suffix="%", font=dict(color=color_pm, size=30, family="Inter")),
-            gauge=dict(
-                axis=dict(range=[0, 80], tickcolor=TICK_COLOR,
-                          tickfont=dict(color=TICK_COLOR)),
-                bar=dict(color=color_pm, thickness=0.28),
-                bgcolor="#f1f8f1",
-                borderwidth=2,
-                bordercolor="#a5d6a7",
-                steps=[
-                    dict(range=[0, 15],  color="#ffebee"),
-                    dict(range=[15, 30], color="#fff8e1"),
-                    dict(range=[30, 80], color="#e8f5e9"),
-                ],
-                threshold=dict(
-                    line=dict(color=color_pm, width=3),
-                    thickness=0.8, value=pm
-                )
-            )
-        ))
-        fig_gauge.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", height=200,
-            margin=dict(l=20, r=20, t=30, b=10),
-            font=dict(color="#1a3828", family="Inter")
-        )
-        st.plotly_chart(fig_gauge, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.download_button("Download CSV", table.to_csv(index=False),
+                       file_name=f"agriflow_{country}_{crop}_{start_year}-{year_val}.csv".replace(" ", "_"),
+                       mime="text/csv", icon=":material/download:")
 
 # ─────────────────────────── FOOTER ───────────────────────────
-st.markdown(f"""
-<div class="agri-footer">
-    <div class="footer-brand">
-        <div class="footer-icon">AF</div>
-        <span class="footer-name">AgriFlow AI — Agricultural Intelligence Platform</span>
-    </div>
-    <span class="footer-meta">{now_full} &nbsp;·&nbsp; Powered by RandomForest · Plotly · Streamlit</span>
+html(f"""
+<div class="af-footer">
+    <span>AgriFlow AI · Crop &amp; food security analytics</span>
+    <span>Forecast: RandomForest per country and crop · Yield: linear trend · {now.strftime("%d %b %Y")}</span>
 </div>
-""", unsafe_allow_html=True)
+""")

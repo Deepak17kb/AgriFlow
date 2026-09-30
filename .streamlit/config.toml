@@ -1,0 +1,23 @@
+[theme]
+base = "light"
+primaryColor = "#1a7f4e"
+backgroundColor = "#f6f7f9"
+secondaryBackgroundColor = "#f2f4f7"
+textColor = "#101828"
+borderColor = "#e4e7ec"
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "0.5rem"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+chartCategoricalColors = ["#1a7f4e", "#2a78d6", "#4a3aa7", "#eb6834"]
+
+[theme.sidebar]
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f6f7f9"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
