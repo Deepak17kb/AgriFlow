@@ -96,6 +96,8 @@ agriflow-ai/
 ├── utils.py               ← CSV loader with column-name normalization, ISO-3 country codes
 ├── data.csv               ← 10,500+ row global agricultural dataset (2013-2024)
 ├── .streamlit/config.toml ← Base theme, Inter font and toolbar settings
+├── site/                  ← Static project page served by Vercel
+├── vercel.json            ← Vercel config: serve site/ only, no Python build
 └── requirements.txt       ← Python dependencies
 ```
 
@@ -123,6 +125,19 @@ streamlit run app.py
 ```
 
 The app opens at `http://localhost:8501`
+
+---
+
+## Deployment
+
+| Where | What runs there |
+|---|---|
+| **Streamlit Community Cloud** | The dashboard itself (`app.py`). Streamlit needs a long-running Python server with a WebSocket connection, so it is hosted on a Python platform. |
+| **Vercel** | The static project page in `site/` (screenshot, features, links). `vercel.json` tells Vercel to serve only that folder, and `.vercelignore` keeps the Python app out of the Vercel build. |
+
+To deploy the dashboard on Streamlit Community Cloud: go to [share.streamlit.io](https://share.streamlit.io),
+choose **Create app → Deploy a public app from GitHub**, pick `Deepak17kb/AgriFlow`, branch `main`,
+file `app.py`, and deploy. Pushes to `main` redeploy it automatically.
 
 ---
 

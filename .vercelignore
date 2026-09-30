@@ -1,0 +1,7 @@
+# Vercel serves only the static project page in site/.
+# The Streamlit app needs a long-running Python server, so it is hosted on Streamlit Community Cloud.
+*.py
+requirements.txt
+data.csv
+.streamlit/
+__pycache__/
