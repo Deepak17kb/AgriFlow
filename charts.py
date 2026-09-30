@@ -4,15 +4,21 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
-from ui import MONO, SANS, rgba
+from ui import SANS, rgba
 
-DISPLAY = "Syne, Inter, sans-serif"
 # FSI score bands behind the fs_status labels in the data.
-FSI_BANDS = [(0, 35, "bad", "INSECURE"), (35, 50, "warn", "AT RISK"), (50, 70, None, "MODERATE"), (70, 100, "good", "SECURE")]
-PROFILE = [("Yield", "Yield", True), ("FSI", "Food security", True), ("ProfitMargin", "Margin", True),
+FSI_BANDS = [(0, 35, "bad", "Insecure"), (35, 50, "warn", "At risk"), (50, 70, None, "Moderate"), (70, 100, "good", "Secure")]
+PROFILE = [("Yield", "Yield", True), ("FSI", "Food security", True), ("ProfitMargin", "Profit margin", True),
            ("Irrigation", "Irrigation", True), ("Mechanization", "Mechanization", True),
-           ("SoilHealth", "Soil health", True), ("LossRate", "Low loss", False)]
+           ("SoilHealth", "Soil health", True), ("LossRate", "Low post-harvest loss", False)]
+
+
+def ordinal(n):
+    n = int(round(n))
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
 
 
 def style(fig, t, *, height=260, legend=False, years=None, y_range=None, zero_line=False,
@@ -24,15 +30,15 @@ def style(fig, t, *, height=260, legend=False, years=None, y_range=None, zero_li
         font=dict(family=SANS, size=12, color=t["ink_2"]),
         showlegend=legend,
         legend=dict(orientation="h", x=0, xanchor="left", y=1.02, yanchor="bottom", bgcolor="rgba(0,0,0,0)",
-                    font=dict(family=SANS, size=11.5, color=t["ink_2"]), itemclick=False, itemdoubleclick=False),
+                    font=dict(family=SANS, size=12, color=t["ink_2"]), itemclick=False, itemdoubleclick=False),
         hovermode=hovermode,
-        hoverlabel=dict(bgcolor=t["surface_2"], bordercolor=t["border_strong"],
+        hoverlabel=dict(bgcolor=t["surface"], bordercolor=t["border_strong"],
                         font=dict(family=SANS, size=12, color=t["ink"])),
-        transition=dict(duration=550, easing="cubic-in-out"),
-        bargap=0.38, barcornerradius=5,
+        transition=dict(duration=400, easing="cubic-in-out"),
+        bargap=0.38, barcornerradius=3,
     )
-    tick = dict(family=MONO, size=10.5, color=t["c_tick"])
-    title_font = dict(family=MONO, size=10.5, color=t["muted"])
+    tick = dict(family=SANS, size=11, color=t["c_tick"])
+    title_font = dict(family=SANS, size=11.5, color=t["muted"])
     fig.update_xaxes(showgrid=False, showline=True, linecolor=t["c_axis"], ticks="", zeroline=False, tickfont=tick,
                      title_font=title_font, fixedrange=True, automargin=True)
     if hovermode == "x unified":
@@ -51,12 +57,11 @@ def show(fig, key, **kwargs):
     return st.plotly_chart(fig, key=key, theme=None, config={"displayModeBar": False}, **kwargs)
 
 
-def line(x, y, name, color, t, unit="", fmt=".2f", symbol="circle", smooth=True):
-    shape = dict(shape="spline", smoothing=0.55) if smooth else {}
+def line(x, y, name, color, t, unit="", fmt=".2f", symbol="circle"):
     return go.Scatter(
         x=x, y=y, name=name, mode="lines+markers",
-        line=dict(color=color, width=2.4, **shape),
-        marker=dict(size=8, color=color, symbol=symbol, line=dict(color=t["surface"], width=2)),
+        line=dict(color=color, width=2),
+        marker=dict(size=7, color=color, symbol=symbol, line=dict(color=t["surface"], width=1.5)),
         hovertemplate=f"%{{y:{fmt}}} {unit}<extra>{name}</extra>",
     )
 
@@ -64,21 +69,27 @@ def line(x, y, name, color, t, unit="", fmt=".2f", symbol="circle", smooth=True)
 def area(x, y, name, color, t, unit="", fmt=",.0f"):
     trace = line(x, y, name, color, t, unit, fmt)
     trace.update(fill="tozeroy",
-                 fillgradient=dict(type="vertical", colorscale=[[0, rgba(color, 0)], [1, rgba(color, 0.32)]]))
+                 fillgradient=dict(type="vertical", colorscale=[[0, rgba(color, 0)], [1, rgba(color, 0.14)]]))
     return trace
 
 
-def bars(x, y, name, color, unit="", fmt=",.0f", customdata=None, hovertemplate=None):
-    return go.Bar(x=x, y=y, name=name, marker=dict(color=color), customdata=customdata,
-                  hovertemplate=hovertemplate or f"%{{y:{fmt}}} {unit}<extra>{name}</extra>")
+def bars(x, y, name, color, unit="", fmt=",.0f"):
+    return go.Bar(x=x, y=y, name=name, marker=dict(color=color),
+                  hovertemplate=f"%{{y:{fmt}}} {unit}<extra>{name}</extra>")
 
 
 def signed_bars(years, values, t, pos_name, neg_name, unit, fmt=",.0f"):
-    """Blue above zero, red below: the validated diverging pair, with a legend so sign is never color-only."""
+    """Blue above zero, red below: the validated polarity pair, with a legend so sign is never color-only."""
     fig = go.Figure([bars(years, values.where(values >= 0), pos_name, t["c_b"], unit, fmt),
                      bars(years, values.where(values < 0), neg_name, t["c_red"], unit, fmt)])
     fig.update_layout(barmode="relative")
     return fig
+
+
+def _two_groups(stats, country):
+    """(others, selected) rows, in that order."""
+    mask = stats["Country"] == country
+    return stats[~mask], stats[mask]
 
 
 # ─────────────────────────── Overview ───────────────────────────
@@ -88,14 +99,15 @@ def yield_fan(data, slope, intercept, projections, t):
     (y1, p1, lo1, hi1), (y3, p3, lo3, hi3) = projections
     fit_last = slope * last + intercept
     fig = go.Figure()
-    fig.add_scatter(x=[last, y1, y3, y3, y1, last], y=[fit_last, hi1, hi3, lo3, lo1, fit_last], fill="toself", mode="lines",
-                    fillcolor=rgba(t["c_a"], 0.13), line=dict(width=0), name="Likely range", hoverinfo="skip")
+    fig.add_scatter(x=[last, y1, y3, y3, y1, last], y=[fit_last, hi1, hi3, lo3, lo1, fit_last], fill="toself",
+                    mode="lines", fillcolor=rgba(t["c_a"], 0.12), line=dict(width=0), name="Likely range",
+                    hoverinfo="skip")
     fig.add_scatter(x=[first, last], y=[slope * first + intercept, fit_last], mode="lines", name="Trend",
                     line=dict(color=t["c_trend"], width=1.5), hoverinfo="skip")
     fig.add_scatter(x=[last, y1, y3], y=[fit_last, p1, p3], mode="lines", showlegend=False, hoverinfo="skip",
-                    line=dict(color=t["c_a"], width=1.8, dash="dot"))
+                    line=dict(color=t["c_a"], width=1.5, dash="dot"))
     fig.add_scatter(x=[y1, y3], y=[p1, p3], mode="markers", name="Projection", customdata=[[lo1, hi1], [lo3, hi3]],
-                    marker=dict(size=10, color=t["surface"], line=dict(color=t["c_a"], width=2.2)),
+                    marker=dict(size=9, color=t["surface"], line=dict(color=t["c_a"], width=2)),
                     hovertemplate="%{y:.2f} MT/ha · range %{customdata[0]:.2f}–%{customdata[1]:.2f}<extra>Projection</extra>")
     fig.add_trace(line(years, data["Yield"], "Yield", t["c_a"], t, "MT/ha"))
     return style(fig, t, height=310, legend=True, years=np.array([first, y3]))
@@ -105,12 +117,71 @@ def fsi_bands(data, t):
     fig = go.Figure()
     for y0, y1, tone, label in FSI_BANDS:
         color = t[tone] if tone else t["c_trend"]
-        fig.add_hrect(y0=y0, y1=y1, fillcolor=rgba(color, 0.07), line_width=0, layer="below")
+        fig.add_hrect(y0=y0, y1=y1, fillcolor=rgba(color, 0.05), line_width=0, layer="below")
         fig.add_annotation(xref="paper", x=1.01, xanchor="left", y=(y0 + y1) / 2, text=label, showarrow=False,
-                           font=dict(family=MONO, size=9.5, color=color))
+                           font=dict(family=SANS, size=11, color=t["muted"]))
     fig.add_trace(line(data["Year"], data["FSI"], "FSI", t["c_violet"], t, "", ".0f"))
-    style(fig, t, height=270, years=data["Year"], y_range=[0, 100], margin=dict(l=4, r=78, t=8, b=4))
+    style(fig, t, height=290, years=data["Year"], y_range=[0, 100], margin=dict(l=4, r=70, t=8, b=4))
     fig.update_yaxes(dtick=25)
+    return fig
+
+
+def latest_vs_history(data, t):
+    """How far the latest record sits from its own period average, in standard deviations."""
+    metrics = [("Yield", "Yield"), ("FSI", "Food security"), ("Production", "Production"), ("Price", "Price"),
+               ("ProfitMargin", "Profit margin"), ("LossRate", "Post-harvest loss"), ("Rainfall", "Rainfall"),
+               ("Temperature", "Temperature")]
+    rows = []
+    for col, label in metrics:
+        s = data[col].astype(float)
+        sd = s.std(ddof=1)
+        z = (s.iloc[-1] - s.mean()) / sd if sd and np.isfinite(sd) else 0.0
+        rows.append((label, z, s.iloc[-1], s.mean()))
+    d = pd.DataFrame(rows, columns=["Metric", "Z", "Latest", "Mean"])
+    fig = go.Figure()
+    for name, part, color in [("Above average", d[d["Z"] >= 0], t["c_b"]), ("Below average", d[d["Z"] < 0], t["c_red"])]:
+        fig.add_bar(x=part["Z"], y=part["Metric"], orientation="h", name=name, marker_color=color,
+                    text=[f"{z:+.1f}" for z in part["Z"]], textposition="outside", cliponaxis=False,
+                    textfont=dict(family=SANS, size=11, color=t["ink_2"]),
+                    customdata=np.stack([part["Latest"], part["Mean"]], axis=-1) if len(part) else None,
+                    hovertemplate="%{y}: %{x:+.2f} SD<br>Latest %{customdata[0]:,.2f} · average %{customdata[1]:,.2f}<extra></extra>")
+    lim = max(2.0, float(d["Z"].abs().max()) * 1.3)
+    style(fig, t, height=310, legend=True, hovermode="closest", zero_line=True)
+    fig.update_xaxes(range=[-lim, lim], showline=False, title_text="SD from period average")
+    fig.update_yaxes(showgrid=False, categoryorder="array", categoryarray=[m for _, m in metrics][::-1],
+                     tickfont=dict(family=SANS, size=12, color=t["ink_2"]))
+    fig.update_layout(bargap=0.35)
+    return fig
+
+
+def bullets(stats, country, t):
+    """Bullet charts: the country's average against the spread of all countries growing the crop."""
+    metrics = [("Mechanization", "Mechanization", "%", 100), ("Irrigation", "Irrigation", "%", 100),
+               ("SoilHealth", "Soil health", "", 100), ("LossRate", "Post-harvest loss", "%", None)]
+    row = stats.loc[stats["Country"] == country].iloc[0]
+    fig = make_subplots(rows=len(metrics), cols=1, vertical_spacing=0.14)
+    for i, (col, label, unit, cap) in enumerate(metrics, start=1):
+        s = stats[col]
+        v = float(row[col])
+        lo, q1, med, q3, hi = s.min(), s.quantile(0.25), s.median(), s.quantile(0.75), s.max()
+        fig.add_bar(x=[hi - lo], base=[lo], y=[label], orientation="h", width=0.62, marker_color=t["c_band1"],
+                    hovertemplate=f"All countries: {lo:.0f}–{hi:.0f}{unit}<extra>{label}</extra>", row=i, col=1)
+        fig.add_bar(x=[q3 - q1], base=[q1], y=[label], orientation="h", width=0.62, marker_color=t["c_band2"],
+                    hovertemplate=f"Middle 50%: {q1:.0f}–{q3:.0f}{unit}<extra>{label}</extra>", row=i, col=1)
+        fig.add_bar(x=[v], base=[0], y=[label], orientation="h", width=0.24, marker_color=t["c_a"],
+                    hovertemplate=f"{country}: %{{x:.1f}}{unit}<extra>{label}</extra>", row=i, col=1)
+        fig.add_scatter(x=[med], y=[label], mode="markers",
+                        marker=dict(symbol="line-ns", size=24, line=dict(color=t["ink"], width=2)),
+                        hovertemplate=f"Median: %{{x:.1f}}{unit}<extra>{label}</extra>", row=i, col=1)
+        fig.update_xaxes(range=[0, cap or float(np.ceil(max(hi, v) * 1.15))], row=i, col=1)
+        fig.update_yaxes(range=[-0.5, 0.5], row=i, col=1)
+        fig.add_annotation(xref="paper", yref=f"y{'' if i == 1 else i} domain", x=1.01, y=0.5, xanchor="left",
+                           showarrow=False, text=f"<b>{v:.0f}{unit}</b>  ·  median {med:.0f}{unit}",
+                           font=dict(family=SANS, size=12, color=t["ink_2"]))
+    style(fig, t, height=56 * len(metrics) + 20, hovermode="closest", margin=dict(l=4, r=150, t=10, b=4))
+    fig.update_layout(barmode="overlay", barcornerradius=2)
+    fig.update_yaxes(showgrid=False, tickfont=dict(family=SANS, size=12.5, color=t["ink_2"]))
+    fig.update_xaxes(showline=False, showgrid=False, showticklabels=False)
     return fig
 
 
@@ -119,20 +190,20 @@ def rainfall_anomaly(data, t):
     mean = data["Rainfall"].mean()
     fig = signed_bars(data["Year"], data["Rainfall"] - mean, t, "Wetter than average", "Drier than average", "mm")
     fig.update_traces(customdata=data["Rainfall"],
-                      hovertemplate="%{customdata:,.0f} mm · %{y:+,.0f} vs avg<extra>%{fullData.name}</extra>")
+                      hovertemplate="%{customdata:,.0f} mm · %{y:+,.0f} vs average<extra>%{fullData.name}</extra>")
     fig.data[1].marker.color = t["c_orange"]
     style(fig, t, legend=True, years=data["Year"], zero_line=True)
     fig.add_annotation(xref="paper", x=1, xanchor="right", y=0, yshift=10, showarrow=False,
-                       text=f"avg {mean:,.0f} mm", font=dict(family=MONO, size=10, color=t["muted"]))
+                       text=f"average {mean:,.0f} mm", font=dict(family=SANS, size=11, color=t["muted"]))
     return fig
 
 
 def temperature(data, t):
     mean = data["Temperature"].mean()
-    fig = go.Figure(area(data["Year"], data["Temperature"], "Temperature", t["c_orange"], t, "°C", ".1f"))
+    fig = go.Figure(line(data["Year"], data["Temperature"], "Temperature", t["c_orange"], t, "°C", ".1f"))
     fig.add_hline(y=mean, line=dict(color=t["c_trend"], width=1))
     fig.add_annotation(xref="paper", x=1, xanchor="right", y=mean, yshift=10, showarrow=False,
-                       text=f"avg {mean:.1f} °C", font=dict(family=MONO, size=10, color=t["muted"]))
+                       text=f"average {mean:.1f} °C", font=dict(family=SANS, size=11, color=t["muted"]))
     return style(fig, t, years=data["Year"])
 
 
@@ -143,12 +214,12 @@ def rain_vs_yield(data, rain_r, t):
         rx = np.array([data["Rainfall"].min(), data["Rainfall"].max()])
         fig.add_scatter(x=rx, y=m * rx + b, mode="lines", line=dict(color=t["c_trend"], width=1.5), hoverinfo="skip")
     fig.add_scatter(x=data["Rainfall"], y=data["Yield"], mode="markers", customdata=data["Year"],
-                    marker=dict(size=12, color=t["c_a"], line=dict(color=t["surface"], width=2)),
+                    marker=dict(size=10, color=t["c_a"], line=dict(color=t["surface"], width=1.5)),
                     hovertemplate="<b>%{customdata}</b><br>Rainfall %{x:,.0f} mm<br>Yield %{y:.2f} MT/ha<extra></extra>")
     for idx in {data["Yield"].idxmax(), data["Yield"].idxmin()}:
         row = data.loc[idx]
-        fig.add_annotation(x=row["Rainfall"], y=row["Yield"], text=str(int(row["Year"])), showarrow=False, yshift=15,
-                           font=dict(family=MONO, size=10, color=t["ink_2"]))
+        fig.add_annotation(x=row["Rainfall"], y=row["Yield"], text=str(int(row["Year"])), showarrow=False, yshift=13,
+                           font=dict(family=SANS, size=11, color=t["ink_2"]))
     style(fig, t, height=290, hovermode="closest")
     fig.update_xaxes(title_text="Rainfall (mm)")
     return fig
@@ -156,18 +227,18 @@ def rain_vs_yield(data, rain_r, t):
 
 def correlation_matrix(crop_df, t):
     variables = [("FSI", "FSI"), ("Yield", "Yield"), ("LossRate", "Loss rate"), ("Rainfall", "Rainfall"),
-                 ("Temperature", "Temp"), ("Irrigation", "Irrigation"), ("fertilizer_kg_ha", "Fertilizer"),
+                 ("Temperature", "Temperature"), ("Irrigation", "Irrigation"), ("fertilizer_kg_ha", "Fertilizer"),
                  ("SoilHealth", "Soil health"), ("ProfitMargin", "Margin")]
     variables = [(c, label) for c, label in variables if c in crop_df.columns]
     labels = [label for _, label in variables]
     corr = crop_df[[c for c, _ in variables]].corr().to_numpy()
     z = [[corr[i][j] if j <= i else None for j in range(len(labels))] for i in range(len(labels))]
     fig = go.Figure(go.Heatmap(
-        z=z, x=labels, y=labels, zmin=-1, zmax=1, xgap=3, ygap=3, hoverongaps=False,
+        z=z, x=labels, y=labels, zmin=-1, zmax=1, xgap=2, ygap=2, hoverongaps=False,
         colorscale=[[0, t["c_red"]], [0.5, t["c_mid"]], [1, t["c_b"]]],
-        texttemplate="%{z:.2f}", textfont=dict(family=MONO, size=10, color=t["ink"]),
+        texttemplate="%{z:.2f}", textfont=dict(family=SANS, size=10.5, color=t["ink"]),
         hovertemplate="%{y} × %{x}<br>r = %{z:.2f}<extra></extra>",
-        colorbar=dict(thickness=8, len=0.8, outlinewidth=0, tickfont=dict(family=MONO, size=10, color=t["c_tick"])),
+        colorbar=dict(thickness=8, len=0.8, outlinewidth=0, tickfont=dict(family=SANS, size=10.5, color=t["c_tick"])),
     ))
     style(fig, t, height=360, hovermode="closest")
     fig.update_xaxes(showline=False, tickangle=-35)
@@ -176,6 +247,36 @@ def correlation_matrix(crop_df, t):
 
 
 # ─────────────────────────── Economics ───────────────────────────
+def indexed_trends(data, t):
+    """Yield, production, price and FSI on one axis, each indexed to its first record."""
+    series = [("Yield", "Yield", t["c_a"], ".2f", "MT/ha"), ("Production", "Production", t["c_b"], ",.0f", "MT"),
+              ("Price", "Price", t["c_orange"], ",.0f", "USD/MT"), ("FSI", "Food security", t["c_violet"], ".0f", "")]
+    fig = go.Figure()
+    values = []
+    for col, name, color, fmt, unit in series:
+        base = float(data[col].iloc[0])
+        if not base:
+            continue
+        idx = data[col] / base * 100
+        values.extend(idx.tolist())
+        trace = line(data["Year"], idx, name, color, t)
+        trace.update(customdata=data[col],
+                     hovertemplate=f"%{{y:.0f}} · %{{customdata:{fmt}}} {unit}<extra>{name}</extra>")
+        fig.add_trace(trace)
+    fig.add_hline(y=100, line=dict(color=t["c_axis"], width=1))
+    style(fig, t, height=320, legend=True, years=data["Year"])
+    positive = [v for v in values if v > 0]
+    log = bool(positive) and max(positive) / min(positive) > 12
+    first = int(data["Year"].iloc[0])
+    fig.update_yaxes(type="log" if log else "linear",
+                     title_text=f"Index, {first} = 100" + (" (log scale)" if log else ""))
+    if log:
+        lo, hi = min(positive), max(positive)
+        ticks = [m * 10 ** e for e in range(-1, 5) for m in (1, 2, 5) if lo / 1.5 <= m * 10 ** e <= hi * 1.5]
+        fig.update_yaxes(tickvals=ticks, ticktext=[f"{v:g}" for v in ticks])
+    return fig
+
+
 def trade_waterfall(latest, t):
     exports, imports = float(latest.get("export_usd_m", 0)), float(latest.get("import_usd_m", 0))
 
@@ -189,10 +290,10 @@ def trade_waterfall(latest, t):
         increasing=dict(marker=dict(color=t["c_b"])), decreasing=dict(marker=dict(color=t["c_red"])),
         totals=dict(marker=dict(color=t["c_trend"])), connector=dict(line=dict(color=t["c_axis"], width=1)),
         text=[money(exports), money(-imports), money(net)], textposition="outside", cliponaxis=False,
-        textfont=dict(family=MONO, size=11, color=t["ink_2"]),
+        textfont=dict(family=SANS, size=11.5, color=t["ink_2"]),
         hovertemplate="%{x}: %{text}<extra></extra>",
     ))
-    style(fig, t, height=280, hovermode="closest", zero_line=True)
+    style(fig, t, height=290, hovermode="closest", zero_line=True)
     fig.update_yaxes(title_text="USD M")
     return fig
 
@@ -211,17 +312,17 @@ def harvest_sankey(latest, t):
     target = [1, 2, 3, 4]
     fig = go.Figure(go.Sankey(
         arrangement="snap",
-        node=dict(label=labels, color=colors, pad=26, thickness=14, line=dict(width=0),
+        node=dict(label=labels, color=colors, pad=26, thickness=12, line=dict(width=0),
                   customdata=["Harvest", "Post-harvest loss", "Reaches market", "Food waste", "Consumed / used"],
                   hovertemplate="%{customdata}<br>%{value:,.0f} MT<extra></extra>"),
         link=dict(source=[0, 0, 2, 2], target=target, value=[lost, market, wasted, used],
-                  color=[rgba(colors[i], 0.28) for i in target],
+                  color=[rgba(colors[i], 0.22) for i in target],
                   hovertemplate="%{source.customdata} → %{target.customdata}<br>%{value:,.0f} MT<extra></extra>"),
         textfont=dict(family=SANS, size=12, color=t["ink"]),
     ))
     fig.update_layout(height=290, margin=dict(l=4, r=4, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)",
                       font=dict(family=SANS, color=t["ink"]),
-                      hoverlabel=dict(bgcolor=t["surface_2"], bordercolor=t["border_strong"],
+                      hoverlabel=dict(bgcolor=t["surface"], bordercolor=t["border_strong"],
                                       font=dict(family=SANS, size=12, color=t["ink"])))
     return fig
 
@@ -231,21 +332,21 @@ def world_map(stats, metric, label, fmt, selected, t):
     scale = [[i / (len(t["seq"]) - 1), c] for i, c in enumerate(t["seq"])]
     fig = go.Figure(go.Choropleth(
         locations=stats["iso3"], z=stats[metric], text=stats["Country"], colorscale=scale,
-        marker=dict(line=dict(color=t["bg"], width=0.6)),
-        colorbar=dict(title=dict(text=label, font=dict(family=MONO, size=10, color=t["muted"])), thickness=9,
-                      len=0.62, x=0.98, outlinewidth=0, tickfont=dict(family=MONO, size=10, color=t["c_tick"])),
+        marker=dict(line=dict(color=t["surface"], width=0.6)),
+        colorbar=dict(title=dict(text=label, font=dict(family=SANS, size=11, color=t["muted"])), thickness=9,
+                      len=0.62, x=0.98, outlinewidth=0, tickfont=dict(family=SANS, size=10.5, color=t["c_tick"])),
         hovertemplate="<b>%{text}</b><br>" + label + " %{z:" + fmt + "}<extra></extra>",
     ))
     sel = stats[stats["Country"] == selected]
     if len(sel):
         fig.add_trace(go.Choropleth(locations=sel["iso3"], z=[1], showscale=False, hoverinfo="skip",
                                     colorscale=[[0, "rgba(0,0,0,0)"], [1, "rgba(0,0,0,0)"]],
-                                    marker=dict(line=dict(color=t["accent"], width=2.4))))
+                                    marker=dict(line=dict(color=t["accent"], width=2.2))))
     fig.update_geos(projection_type="natural earth", showframe=False, showcoastlines=False, showland=True,
                     landcolor=t["c_land"], showcountries=True, countrycolor=t["border"], showocean=False,
                     showlakes=False, bgcolor="rgba(0,0,0,0)", lataxis_range=[-56, 84])
-    fig.update_layout(height=400, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)",
-                      hoverlabel=dict(bgcolor=t["surface_2"], bordercolor=t["border_strong"],
+    fig.update_layout(height=390, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)",
+                      hoverlabel=dict(bgcolor=t["surface"], bordercolor=t["border_strong"],
                                       font=dict(family=SANS, size=12, color=t["ink"])))
     return fig
 
@@ -262,125 +363,112 @@ def ranking(stats, metric, fmt, selected, t, top_n=10):
         x=rows[metric], y=names, orientation="h", cliponaxis=False,
         marker=dict(color=[t["c_a"] if c == selected else t["c_peer"] for c in rows["Country"]]),
         text=[format(v, fmt) for v in rows[metric]], textposition="outside",
-        textfont=dict(family=MONO, size=10.5, color=t["ink_2"]),
+        textfont=dict(family=SANS, size=11, color=t["ink_2"]),
         hovertemplate="%{y}<br>%{x:" + fmt + "}<extra></extra>",
     ))
-    style(fig, t, height=30 * len(rows) + 30, hovermode="closest", margin=dict(l=4, r=48, t=4, b=4))
+    style(fig, t, height=29 * len(rows) + 30, hovermode="closest", margin=dict(l=4, r=48, t=4, b=4))
     fig.update_xaxes(showticklabels=False, showline=False)
     fig.update_yaxes(showgrid=False, tickfont=dict(family=SANS, size=12, color=t["ink_2"]))
-    fig.update_layout(bargap=0.3)
+    fig.update_layout(bargap=0.32)
+    return fig
+
+
+def distribution_bands(crop_df, country, t):
+    """The country's yield against the spread of every country growing the crop, year by year."""
+    q = crop_df.groupby("Year")["Yield"].quantile([0.1, 0.25, 0.5, 0.75, 0.9]).unstack()
+    own = crop_df[crop_df["Country"] == country].sort_values("Year")
+    years = q.index
+    fig = go.Figure()
+    for low, high, name, alpha in [(0.1, 0.9, "Middle 80% of countries", 0.10), (0.25, 0.75, "Middle 50%", 0.20)]:
+        fig.add_scatter(x=years, y=q[low], mode="lines", line=dict(width=0), hoverinfo="skip", showlegend=False)
+        fig.add_scatter(x=years, y=q[high], mode="lines", line=dict(width=0), fill="tonexty",
+                        fillcolor=rgba(t["c_b"], alpha), name=name, hoverinfo="skip")
+    fig.add_scatter(x=years, y=q[0.5], mode="lines", name="Median country", line=dict(color=t["c_b"], width=1.5),
+                    customdata=np.stack([q[0.25], q[0.75]], axis=-1),
+                    hovertemplate="%{y:.2f} MT/ha · middle 50% %{customdata[0]:.2f}–%{customdata[1]:.2f}<extra>Median</extra>")
+    fig.add_trace(line(own["Year"], own["Yield"], country, t["c_a"], t, "MT/ha"))
+    style(fig, t, height=320, legend=True, years=years)
+    fig.update_yaxes(title_text="Yield (MT/ha)")
     return fig
 
 
 def peer_scatter(stats, selected, t):
-    ref = 2.0 * stats["Production"].max() / (40 ** 2)
+    ref = 2.0 * stats["Production"].max() / (36 ** 2)
     fig = go.Figure()
-    for is_sel, group in stats.groupby(stats["Country"] == selected):
+    for is_sel, group in zip((False, True), _two_groups(stats, selected)):
         fig.add_scatter(
             x=group["Yield"], y=group["FSI"], mode="markers+text" if is_sel else "markers",
             name=selected if is_sel else "Other countries",
             text=group["Country"] if is_sel else None, textposition="top center",
             textfont=dict(family=SANS, size=12, color=t["ink"]),
             customdata=np.stack([group["Country"], group["Region"], group["Production"]], axis=-1),
-            marker=dict(size=group["Production"], sizemode="area", sizeref=ref, sizemin=6,
-                        color=t["c_a"] if is_sel else rgba(t["c_peer"], 0.75),
-                        line=dict(color=t["accent"] if is_sel else t["surface"], width=2 if is_sel else 1)),
+            marker=dict(size=group["Production"], sizemode="area", sizeref=ref, sizemin=5,
+                        color=t["c_a"] if is_sel else rgba(t["c_peer"], 0.85),
+                        line=dict(color=t["surface"], width=1)),
             hovertemplate="<b>%{customdata[0]}</b> · %{customdata[1]}<br>Yield %{x:.2f} MT/ha · FSI %{y:.0f}"
                           "<br>Production %{customdata[2]:,.0f} MT<extra></extra>",
         )
     fig.add_vline(x=stats["Yield"].median(), line=dict(color=t["c_axis"], width=1))
     fig.add_hline(y=stats["FSI"].median(), line=dict(color=t["c_axis"], width=1))
-    for x, y, xa, ya, text in [(0.99, 0.99, "right", "top", "HIGH YIELD · SECURE"), (0.01, 0.01, "left", "bottom", "LOW YIELD · AT RISK")]:
-        fig.add_annotation(xref="paper", yref="paper", x=x, y=y, xanchor=xa, yanchor=ya, text=text, showarrow=False,
-                           font=dict(family=MONO, size=9.5, color=t["subtle"]))
-    style(fig, t, height=380, legend=True, hovermode="closest")
+    style(fig, t, height=370, legend=True, hovermode="closest")
     fig.update_xaxes(title_text="Average yield (MT/ha)")
     fig.update_yaxes(title_text="Average FSI")
     fig.update_layout(clickmode="event+select")
     return fig
 
 
-def gapminder(crop_df, selected, t):
-    d = crop_df[["Country", "Year", "Rainfall", "Yield", "Production", "region"]].sort_values("Year").copy()
-    d["Group"] = np.where(d["Country"] == selected, selected, "Other countries")
-    pad = lambda s, f=0.06: [s.min() - (s.max() - s.min()) * f, s.max() + (s.max() - s.min()) * f]
-    fig = px.scatter(
-        d, x="Rainfall", y="Yield", size="Production", color="Group", animation_frame="Year",
-        animation_group="Country", hover_name="Country", size_max=42, template="none",
-        range_x=pad(d["Rainfall"]), range_y=pad(d["Yield"], 0.12),
-        color_discrete_map={selected: t["c_a"], "Other countries": rgba(t["c_peer"], 0.8)},
-        category_orders={"Group": ["Other countries", selected]},
-        hover_data={"Group": False, "Year": False, "region": True, "Production": ":,.0f",
-                    "Rainfall": ":,.0f", "Yield": ":.2f"},
-    )
-    fig.update_traces(marker=dict(line=dict(color=t["surface"], width=1)))
-    style(fig, t, height=500, legend=True, hovermode="closest", margin=dict(l=4, r=10, t=34, b=70))
-    fig.update_layout(legend_title_text="")
-    fig.update_xaxes(title_text="Annual rainfall (mm)")
-    fig.update_yaxes(title_text="Yield (MT/ha)")
-
-    def watermark(year):
-        return [dict(text=str(year), xref="paper", yref="paper", x=0.98, y=0.04, xanchor="right", yanchor="bottom",
-                     showarrow=False, font=dict(family=DISPLAY, size=72, color=rgba(t["ink"], 0.07)))]
-
-    for frame in fig.frames:
-        frame.layout = go.Layout(annotations=watermark(frame.name))
-    if fig.frames:
-        fig.update_layout(annotations=watermark(fig.frames[0].name))
-    button_style = dict(bgcolor=t["surface_2"], bordercolor=t["border"], borderwidth=1,
-                        font=dict(family=MONO, size=11, color=t["ink"]))
-    fig.update_layout(
-        updatemenus=[dict(
-            type="buttons", direction="left", showactive=False, x=0, xanchor="left", y=-0.2, yanchor="top",
-            pad=dict(r=8, t=0), **button_style,
-            buttons=[dict(label="▶  Play", method="animate",
-                          args=[None, dict(frame=dict(duration=900, redraw=False), fromcurrent=True,
-                                           transition=dict(duration=650, easing="cubic-in-out"))]),
-                     dict(label="❚❚  Pause", method="animate",
-                          args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate",
-                                             transition=dict(duration=0))])],
-        )],
-    )
-    if fig.layout.sliders:
-        slider = fig.layout.sliders[0]
-        slider.update(x=0.2, len=0.8, y=-0.16, pad=dict(t=0, b=0), bgcolor=t["surface_2"],
-                      activebgcolor=t["accent"], bordercolor=t["border"], borderwidth=1, tickcolor=t["c_axis"],
-                      font=dict(family=MONO, size=10, color=t["c_tick"]),
-                      currentvalue=dict(visible=False),
-                      steps=[dict(label=s.label, method=s.method,
-                                  args=[s.args[0], {**s.args[1], "transition": dict(duration=500, easing="cubic-in-out")}])
-                             for s in slider.steps])
+def stability(stats, selected, t):
+    """Average yield against year-to-year volatility: up and to the left is better."""
+    fig = go.Figure()
+    for is_sel, group in zip((False, True), _two_groups(stats, selected)):
+        fig.add_scatter(
+            x=group["YieldCV"], y=group["Yield"], mode="markers+text" if is_sel else "markers",
+            name=selected if is_sel else "Other countries", text=group["Country"] if is_sel else None,
+            textposition="top center", textfont=dict(family=SANS, size=12, color=t["ink"]),
+            customdata=group["Country"],
+            marker=dict(size=12 if is_sel else 9, color=t["c_a"] if is_sel else rgba(t["c_peer"], 0.85),
+                        line=dict(color=t["surface"], width=1)),
+            hovertemplate="<b>%{customdata}</b><br>Average yield %{y:.2f} MT/ha<br>Volatility %{x:.1f}%<extra></extra>",
+        )
+    fig.add_vline(x=stats["YieldCV"].median(), line=dict(color=t["c_axis"], width=1))
+    fig.add_hline(y=stats["Yield"].median(), line=dict(color=t["c_axis"], width=1))
+    for x, y, xa, ya, text in [(0.01, 0.99, "left", "top", "Higher yield, more stable"),
+                               (0.99, 0.01, "right", "bottom", "Lower yield, more volatile")]:
+        fig.add_annotation(xref="paper", yref="paper", x=x, y=y, xanchor=xa, yanchor=ya, text=text, showarrow=False,
+                           font=dict(family=SANS, size=11, color=t["subtle"]))
+    style(fig, t, height=370, legend=True, hovermode="closest")
+    fig.update_xaxes(title_text="Yield volatility (coefficient of variation, %)")
+    fig.update_yaxes(title_text="Average yield (MT/ha)")
     return fig
 
 
-def radar(profiles, t):
-    """profiles: list of (name, {label: percentile}, color)."""
-    labels = list(profiles[0][1].keys())
-    theta = labels + labels[:1]
+def percentile_dots(profiles, t):
+    """profiles: list of (name, {label: percentile}, color, symbol). Two profiles draw as a dumbbell."""
+    labels = [label for _, label, _ in PROFILE]
     fig = go.Figure()
-    fig.add_scatterpolar(r=[50] * len(theta), theta=theta, name="Global median", mode="lines",
-                         line=dict(color=t["c_trend"], width=1.2, dash="dot"), hoverinfo="skip")
-    for name, values, color in profiles:
-        r = [values[k] for k in labels]
-        fig.add_scatterpolar(r=r + r[:1], theta=theta, name=name, fill="toself", fillcolor=rgba(color, 0.16),
-                             line=dict(color=color, width=2), marker=dict(size=6, color=color),
-                             hovertemplate="%{theta}: %{r:.0f}th percentile<extra>" + name + "</extra>")
-    fig.update_layout(
-        height=370, margin=dict(l=80, r=80, t=46, b=30), paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(family=SANS, color=t["ink_2"]), showlegend=True,
-        legend=dict(orientation="h", x=0, y=1.08, font=dict(family=SANS, size=11.5, color=t["ink_2"]),
-                    bgcolor="rgba(0,0,0,0)", itemclick=False, itemdoubleclick=False),
-        hoverlabel=dict(bgcolor=t["surface_2"], bordercolor=t["border_strong"],
-                        font=dict(family=SANS, size=12, color=t["ink"])),
-        polar=dict(
-            bgcolor="rgba(0,0,0,0)",
-            radialaxis=dict(range=[0, 100], tickvals=[25, 50, 75, 100], showline=False, gridcolor=t["c_grid"],
-                            tickfont=dict(family=MONO, size=9, color=t["c_tick"]), angle=90, tickangle=90),
-            angularaxis=dict(gridcolor=t["c_grid"], linecolor=t["c_axis"],
-                             tickfont=dict(family=SANS, size=11.5, color=t["ink_2"])),
-        ),
-        transition=dict(duration=550, easing="cubic-in-out"),
-    )
+    for label in labels:
+        fig.add_shape(type="line", x0=0, x1=100, y0=label, y1=label, layer="below",
+                      line=dict(color=t["c_band1"], width=6))
+    fig.add_vline(x=50, line=dict(color=t["c_axis"], width=1))
+    if len(profiles) == 2:
+        a, b = profiles[0][1], profiles[1][1]
+        for label in labels:
+            fig.add_shape(type="line", x0=a[label], x1=b[label], y0=label, y1=label, layer="below",
+                          line=dict(color=t["c_trend"], width=2))
+    single = len(profiles) == 1
+    for name, values, color, symbol in profiles:
+        xs = [values[label] for label in labels]
+        fig.add_scatter(
+            x=xs, y=labels, name=name, mode="markers+text" if single else "markers",
+            text=[ordinal(v) for v in xs] if single else None, textposition="middle right",
+            textfont=dict(family=SANS, size=11.5, color=t["ink_2"]), customdata=[ordinal(v) for v in xs],
+            marker=dict(size=12, color=color, symbol=symbol, line=dict(color=t["surface"], width=2)),
+            hovertemplate="%{y}: %{customdata} percentile<extra>" + name + "</extra>",
+        )
+    style(fig, t, height=40 * len(labels) + 70, legend=True, hovermode="closest")
+    fig.update_xaxes(range=[-3, 108], tickvals=[0, 25, 50, 75, 100], showline=False,
+                     title_text="Percentile (50 = median)")
+    fig.update_yaxes(autorange="reversed", showgrid=False, tickfont=dict(family=SANS, size=12, color=t["ink_2"]))
     return fig
 
 
@@ -393,12 +481,12 @@ def portfolio_heatmap(country_df, selected_crop, t):
     crops = index.index.tolist()
     fig = go.Figure(go.Heatmap(
         z=index.values, x=index.columns, y=crops, customdata=raw.values, zmid=100, zmin=70, zmax=130,
-        xgap=3, ygap=3, hoverongaps=False, colorscale=[[0, t["c_red"]], [0.5, t["c_mid"]], [1, t["c_b"]]],
+        xgap=2, ygap=2, hoverongaps=False, colorscale=[[0, t["c_red"]], [0.5, t["c_mid"]], [1, t["c_b"]]],
         hovertemplate="<b>%{y}</b> · %{x}<br>Yield %{customdata:.2f} MT/ha<br>%{z:.0f}% of its average<extra></extra>",
-        colorbar=dict(title=dict(text="% of avg", font=dict(family=MONO, size=10, color=t["muted"])), thickness=8,
-                      len=0.8, outlinewidth=0, tickfont=dict(family=MONO, size=10, color=t["c_tick"])),
+        colorbar=dict(title=dict(text="% of avg", font=dict(family=SANS, size=11, color=t["muted"])), thickness=8,
+                      len=0.8, outlinewidth=0, tickfont=dict(family=SANS, size=10.5, color=t["c_tick"])),
     ))
-    style(fig, t, height=max(260, 28 * len(crops) + 60), hovermode="closest", years=index.columns)
+    style(fig, t, height=max(260, 27 * len(crops) + 60), hovermode="closest", years=index.columns)
     fig.update_xaxes(showline=False)
     fig.update_yaxes(autorange="reversed", showgrid=False, tickmode="array", tickvals=crops,
                      ticktext=[f"<b>{c}</b>" if c == selected_crop else c for c in crops],
@@ -419,10 +507,10 @@ def crop_trends(country_df, crops, selected_crop, t):
         x=trends["Pct"], y=names, orientation="h", cliponaxis=False,
         marker=dict(color=[t["c_b"] if v >= 0 else t["c_red"] for v in trends["Pct"]]),
         text=[f"{v:+.1f}%" for v in trends["Pct"]], textposition="outside",
-        textfont=dict(family=MONO, size=10.5, color=t["ink_2"]),
+        textfont=dict(family=SANS, size=11, color=t["ink_2"]),
         hovertemplate="%{y}: %{x:+.1f}% per year<extra></extra>",
     ))
-    style(fig, t, height=max(260, 28 * len(trends) + 40), hovermode="closest", zero_line=True,
+    style(fig, t, height=max(260, 27 * len(trends) + 40), hovermode="closest", zero_line=True,
           margin=dict(l=4, r=44, t=4, b=4))
     lo, hi = min(trends["Pct"].min(), 0), max(trends["Pct"].max(), 0)
     pad = (hi - lo) or 1
@@ -439,17 +527,37 @@ def portfolio_treemap(country_df, t):
     fig = px.treemap(g, path=[px.Constant("All crops"), "crop_category", "Crop"], values="Production",
                      color="Margin", color_continuous_scale=t["seq"], template="none")
     fig.update_traces(
-        marker=dict(line=dict(color=t["surface"], width=2), cornerradius=6), root_color="rgba(0,0,0,0)",
-        texttemplate="<b>%{label}</b><br>%{value:,.0f} MT", textfont=dict(family=SANS, size=13),
+        marker=dict(line=dict(color=t["surface"], width=2), cornerradius=4), root_color="rgba(0,0,0,0)",
+        texttemplate="<b>%{label}</b><br>%{value:,.0f} MT", textfont=dict(family=SANS, size=12.5),
         hovertemplate="<b>%{label}</b><br>Avg production %{value:,.0f} MT<br>Avg margin %{color:.1f}%<extra></extra>",
         pathbar_visible=False,
     )
     fig.update_layout(
-        height=380, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)", font=dict(family=SANS),
-        coloraxis_colorbar=dict(title=dict(text="Margin %", font=dict(family=MONO, size=10, color=t["muted"])),
+        height=370, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)", font=dict(family=SANS),
+        coloraxis_colorbar=dict(title=dict(text="Margin %", font=dict(family=SANS, size=11, color=t["muted"])),
                                 thickness=9, len=0.7, outlinewidth=0,
-                                tickfont=dict(family=MONO, size=10, color=t["c_tick"])),
-        hoverlabel=dict(bgcolor=t["surface_2"], bordercolor=t["border_strong"],
+                                tickfont=dict(family=SANS, size=10.5, color=t["c_tick"])),
+        hoverlabel=dict(bgcolor=t["surface"], bordercolor=t["border_strong"],
                         font=dict(family=SANS, size=12, color=t["ink"])),
     )
+    return fig
+
+
+def production_pareto(country_df, selected_crop, t):
+    """Crops by share of average production, with the cumulative share on the same percent axis."""
+    avg = country_df.groupby("Crop")["Production"].mean().sort_values(ascending=False)
+    share = avg / avg.sum() * 100
+    fig = go.Figure()
+    fig.add_bar(x=share.index, y=share.values, name="Share of production",
+                marker_color=[t["c_a"] if c == selected_crop else t["c_peer"] for c in share.index],
+                hovertemplate="%{x}: %{y:.1f}% of production<extra></extra>")
+    fig.add_scatter(x=share.index, y=share.cumsum().values, mode="lines+markers", name="Cumulative share",
+                    line=dict(color=t["ink_2"], width=1.5), marker=dict(size=5, color=t["ink_2"]),
+                    hovertemplate="Top crops through %{x}: %{y:.0f}%<extra></extra>")
+    fig.add_hline(y=80, line=dict(color=t["c_axis"], width=1))
+    fig.add_annotation(xref="paper", x=1, xanchor="right", y=80, yshift=9, showarrow=False, text="80%",
+                       font=dict(family=SANS, size=11, color=t["muted"]))
+    style(fig, t, height=370, legend=True, hovermode="closest")
+    fig.update_yaxes(range=[0, 104], ticksuffix="%")
+    fig.update_xaxes(tickangle=-40, tickfont=dict(family=SANS, size=11, color=t["ink_2"]))
     return fig

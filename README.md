@@ -66,19 +66,18 @@ Built for agronomists, policy analysts, and food-security researchers who need *
 
 | Feature | Description |
 |---|---|
-| **Dark & Light Themes** | One-click theme switch in the header; the whole page fades between modes |
+| **Light & Dark Themes** | Calm sky-blue and field-green palette; one-click theme switch in the header |
 | **Instant Updates** | No run button: every filter change re-renders the view, and only the open tab is built |
-| **Animated Charts** | Lines draw in, bars grow, and charts morph smoothly when the selection changes |
 | **ML Forecasting** | RandomForest estimates the probability that FSI rises by the next record |
-| **Yield Projections** | Linear trend with a ±1 s.e. projection fan for next year and three years out |
+| **Yield Projections** | Linear trend with a ±1 s.e. projection range for next year and three years out |
 | **KPI Tiles** | Yield, FSI, production, price and trade balance with sparklines and change vs the previous record |
-| **Smart Alerts** | Auto-generated risk alerts — drought, loss rate, FSI decline, forecast direction |
-| **Climate Tab** | Rainfall anomaly, temperature, rainfall-vs-yield, driver correlation matrix, climate profile |
-| **Economics Tab** | Production, price, profit margin, trade balance, trade waterfall and a harvest-loss Sankey |
-| **Benchmark Tab** | World map, country ranking, peer bubble chart (click to jump), percentile radar, animated timeline |
-| **Portfolio Tab** | Crop × year yield heatmap, yield momentum by crop and a production treemap |
-| **Compare & Data** | Two crops side by side with a radar profile; the filtered records with CSV download |
-| **Shareable Links** | `?country=India&crop=Wheat&theme=light&tab=Benchmark` reopens that exact view |
+| **Overview** | Yield trajectory, FSI with status bands, latest year vs history (z-scores), farm-operations bullet charts |
+| **Climate** | Rainfall anomaly, temperature, rainfall vs yield, driver correlation matrix, climate profile |
+| **Economics** | Indexed trends (first year = 100), production, price, margin, trade balance, trade waterfall, harvest-loss Sankey |
+| **Benchmark** | World map, ranking, percentile bands vs all countries, yield vs food security (click to jump), yield vs stability, percentile profile |
+| **Portfolio** | Crop × year yield heatmap, yield momentum by crop, production treemap, production Pareto |
+| **Compare & Data** | Two crops side by side with a percentile dumbbell; the filtered records with CSV download |
+| **Shareable Links** | `?country=India&crop=Wheat&theme=dark&tab=Benchmark` reopens that exact view |
 | **Responsive Layout** | Adapts from wide desktop down to phone width |
 
 </div>
@@ -92,7 +91,7 @@ agriflow-ai/
 │
 ├── app.py                 ← Streamlit entry point · layout, state, alert engine
 ├── charts.py              ← Plotly figure builders for every chart, themed per mode
-├── ui.py                  ← Light/dark theme tokens, global CSS, animations, HTML helpers
+├── ui.py                  ← Light/dark theme tokens, global CSS, HTML helpers
 ├── model.py               ← Feature engineering + RandomForest training & predict
 ├── utils.py               ← CSV loader with column-name normalization, ISO-3 country codes
 ├── data.csv               ← 10,500+ row global agricultural dataset (2013-2024)
@@ -197,9 +196,9 @@ treat the probability as a rough signal, not a calibrated one.
 ┌──────────────────────────────────────────────────────────────┐
 │  SIDEBAR                 │  MAIN PANEL                       │
 │  ────────────────────    │  ───────────────────────────────  │
-│  Country selector        │  Header · status chips · theme    │
+│  Country selector        │  Header · status line · theme     │
 │  Crop selector           │  KPI tiles with sparklines        │
-│  Period (all / 5 / 3 yr) │  Outlook: FSI ring + 2 projections│
+│  Period (all / 5 / 3 yr) │  Outlook: FSI + 2 projections     │
 │  Dataset summary         │  Tabs: Overview · Climate ·       │
 │                          │   Economics · Benchmark ·         │
 │                          │   Portfolio · Compare · Data      │
@@ -237,9 +236,9 @@ FEATURES = ["Yield", "Production", "Rainfall", "Temperature"]
 Match the expected aliases inside each block of `load_data()`.
 
 **Change theme colors** — both modes live in `THEMES` in `ui.py`: interface tokens
-become CSS variables, and the `c_*` keys color the charts. Accent green: `#2dd4a0`
-(dark) / `#0e9f6e` (light). Chart color pairs that share a plot were checked for
-color-vision deficiency, so re-check any pair you change.
+become CSS variables, and the `c_*` keys color the charts. Interface accent is sky
+blue (`#0284c7` light / `#4ea8de` dark); crop data is field green. Chart colors that
+share a plot were checked for color-vision deficiency, so re-check any you change.
 
 ---
 

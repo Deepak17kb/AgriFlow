@@ -6,7 +6,7 @@ import streamlit as st
 
 import charts
 from model import predict, prepare_features, train_model
-from ui import THEMES, callout, card, html, icon, ring, sparkline, theme_css
+from ui import THEMES, callout, card, html, icon, sparkline, theme_css
 from utils import ISO3, load_data
 
 st.set_page_config(page_title="AgriFlow AI", layout="wide", page_icon=":material/eco:")
@@ -20,7 +20,7 @@ METRICS = {  # benchmark metric -> (column, label, number format)
     "Profit margin": ("ProfitMargin", "Margin (%)", ",.1f"),
     "Production": ("Production", "Production (MT)", ",.0f"),
 }
-THEME_LABELS = {"light": ":material/light_mode: Light", "dark": ":material/dark_mode: Dark"}
+THEME_ICONS = {"light": ":material/light_mode:", "dark": ":material/dark_mode:"}
 
 
 # ─────────────────────────── DATA ───────────────────────────
@@ -46,8 +46,10 @@ def pair_records(country, crop, start_year=None):
 
 @st.cache_data(show_spinner=False)
 def crop_rows(crop):
+    """All records for a crop, limited to countries where it can be analysed."""
+    eligible = [c for c, crops in get_catalog().items() if crop in crops]
     df = get_data()
-    return df[df["Crop"] == crop]
+    return df[(df["Crop"] == crop) & df["Country"].isin(eligible)]
 
 
 @st.cache_data(show_spinner=False)
@@ -58,15 +60,15 @@ def country_rows(country):
 
 @st.cache_data(show_spinner=False)
 def crop_stats(crop):
-    """Per-country averages for one crop, over countries it can be analysed in."""
-    eligible = [c for c, crops in get_catalog().items() if crop in crops]
-    d = crop_rows(crop)
-    stats = (d[d["Country"].isin(eligible)].groupby("Country")
-             .agg(Yield=("Yield", "mean"), FSI=("FSI", "mean"), ProfitMargin=("ProfitMargin", "mean"),
-                  Production=("Production", "mean"), LossRate=("LossRate", "mean"),
-                  Irrigation=("Irrigation", "mean"), Mechanization=("Mechanization", "mean"),
-                  SoilHealth=("SoilHealth", "mean"), Region=("region", "first"))
+    """Per-country averages for one crop."""
+    stats = (crop_rows(crop).groupby("Country")
+             .agg(Yield=("Yield", "mean"), YieldSD=("Yield", "std"), FSI=("FSI", "mean"),
+                  ProfitMargin=("ProfitMargin", "mean"), Production=("Production", "mean"),
+                  LossRate=("LossRate", "mean"), Irrigation=("Irrigation", "mean"),
+                  Mechanization=("Mechanization", "mean"), SoilHealth=("SoilHealth", "mean"),
+                  Region=("region", "first"))
              .reset_index())
+    stats["YieldCV"] = stats["YieldSD"] / stats["Yield"] * 100
     stats["iso3"] = stats["Country"].map(ISO3)
     return stats
 
@@ -122,6 +124,11 @@ def money_m(v):
     return f"{sign}&#36;{a / 1000:.2f}B" if a >= 1000 else f"{sign}&#36;{a:,.0f}M"
 
 
+def sentence(text):
+    text = str(text)
+    return text[:1].upper() + text[1:].lower()
+
+
 FS_TONES = [("food insecure", "bad"), ("moderately insecure", "warn"), ("moderately secure", "neutral"),
             ("secure", "good")]
 DROUGHT_TONES = [("critical", "bad"), ("extreme", "bad"), ("high", "bad"), ("moderate", "warn"),
@@ -148,11 +155,11 @@ def rows_html(pairs):
 catalog = get_catalog()
 countries = sorted(catalog)
 
-# First load: restore the view from the URL (?country=India&crop=Wheat&theme=light&tab=Benchmark).
+# First load: restore the view from the URL (?country=India&crop=Wheat&theme=dark&tab=Benchmark).
 if "booted" not in st.session_state:
     qp = st.query_params
     st.session_state.booted = True
-    st.session_state.theme = qp.get("theme") if qp.get("theme") in THEMES else "dark"
+    st.session_state.theme = qp.get("theme") if qp.get("theme") in THEMES else "light"
     st.session_state.country = qp.get("country") if qp.get("country") in catalog else (
         "India" if "India" in catalog else countries[0])
     crops0 = catalog[st.session_state.country]
@@ -170,11 +177,10 @@ df = get_data()
 with st.sidebar:
     html(f"""
     <div class="af-brand">
-        <div class="af-mark">{icon("leaf", 19)}</div>
-        <div><div class="af-brand-name">AgriFlow <span>AI</span></div>
-        <div class="af-brand-sub">crop intelligence platform</div></div>
+        <div class="af-mark">{icon("leaf", 17)}</div>
+        <div><div class="af-brand-name">AgriFlow AI</div>
+        <div class="af-brand-sub">Crop and food security analytics</div></div>
     </div>
-    <div class="af-side-title">Filters</div>
     """)
     country = st.selectbox("Country", countries, key="country")
 
@@ -197,15 +203,11 @@ with st.sidebar:
     st.caption(f"{start_year}–{last_year} · {int((pair_all['Year'] >= start_year).sum())} records")
 
     html(f"""
-    <div class="af-side-title">Dataset</div>
-    <div class="af-cover">
-        <div><b>{df["Country"].nunique()}</b><span>countries</span></div>
-        <div><b>{df["Crop"].nunique()}</b><span>crops</span></div>
-        <div><b>{int(df["Year"].min())}–{str(int(df["Year"].max()))[2:]}</b><span>years</span></div>
-        <div><b>{compact(len(df))}</b><span>records</span></div>
-    </div>
-    <div class="af-hint">Views update the moment you change a filter. The address bar always holds a
-    <b>shareable link</b> to this exact view.</div>
+    <div class="af-side-title" style="margin-top:14px">Dataset</div>
+    {rows_html([("Countries", df["Country"].nunique()), ("Crops", df["Crop"].nunique()),
+                ("Years", f'{int(df["Year"].min())}–{int(df["Year"].max())}'), ("Records", f"{len(df):,}")])}
+    <div class="af-hint">Views update as soon as a filter changes. The address bar holds a shareable link
+    to the current view.</div>
     """)
 
 # ─────────────────────────── ANALYSIS ───────────────────────────
@@ -223,21 +225,19 @@ fs_status, drought = str(latest["FSStatus"]), str(latest["DroughtRisk"])
 region = latest.get("region")
 
 # ─────────────────────────── HEADER ───────────────────────────
-head_l, head_r = st.columns([5, 1.4], vertical_alignment="top")
+head_l, head_r = st.columns([6, 1], vertical_alignment="top")
 with head_r:
     with st.container(horizontal=True, horizontal_alignment="right"):
-        st.segmented_control("Theme", list(THEME_LABELS), key="theme", required=True,
-                             format_func=THEME_LABELS.get, label_visibility="collapsed")
+        st.segmented_control("Theme", list(THEME_ICONS), key="theme", required=True,
+                             format_func=THEME_ICONS.get, label_visibility="collapsed")
 with head_l:
     html(f"""
-    <div class="af-head">
-        <div class="af-eyebrow"><span class="af-live"></span>{region if isinstance(region, str) else "Global"} · crop intelligence</div>
-        <div class="af-title"><span class="crop">{crop}</span> <span class="in">in</span> {country}</div>
-        <div class="af-meta">
-            <span class="af-meta-text">{start_year}–{year_val} · {len(data)} annual records</span>
-            <span class="af-chip {tone_for(fs_status, FS_TONES)}"><i></i>{fs_status}</span>
-            <span class="af-chip {tone_for(drought, DROUGHT_TONES)}"><i></i>Drought risk <b>{drought}</b></span>
-        </div>
+    <div class="af-eyebrow">{region if isinstance(region, str) else "Crop analytics"}</div>
+    <div class="af-title">{crop} <span>in</span> {country}</div>
+    <div class="af-meta">
+        <span>{start_year}–{year_val} · {len(data)} annual records</span>
+        <span><i class="af-dot {tone_for(fs_status, FS_TONES)}"></i>{sentence(fs_status)}</span>
+        <span><i class="af-dot {tone_for(drought, DROUGHT_TONES)}"></i>{sentence(drought)} drought risk</span>
     </div>
     """)
 
@@ -245,7 +245,7 @@ with head_l:
 # ─────────────────────────── KPI TILES ───────────────────────────
 def delta(change, text, good_when="up"):
     if not np.isfinite(change) or change == 0:
-        return "neutral", "● 0"
+        return "neutral", "No change"
     tone = "neutral" if good_when is None else ("good" if (change > 0) == (good_when == "up") else "bad")
     return tone, f"{'▲' if change > 0 else '▼'} {text}"
 
@@ -259,7 +259,7 @@ fsi_change = latest["FSI"] - prev["FSI"]
 trade_change = latest["TradeBalance"] - prev["TradeBalance"]
 kpis = [
     ("Yield", f"{latest['Yield']:.2f}", "MT/ha", pct(latest["Yield"], prev["Yield"]), data["Yield"]),
-    ("Food security", f"{latest['FSI']:.0f}", "/ 100", delta(fsi_change, f"{abs(fsi_change):.0f} pts"), data["FSI"]),
+    ("Food security index", f"{latest['FSI']:.0f}", "/ 100", delta(fsi_change, f"{abs(fsi_change):.0f} pts"), data["FSI"]),
     ("Production", compact(latest["Production"]), "MT", pct(latest["Production"], prev["Production"]), data["Production"]),
     ("Price", f"&#36;{latest['Price']:,.0f}", "/ MT", pct(latest["Price"], prev["Price"], None), data["Price"]),
     ("Trade balance", money_m(latest["TradeBalance"]), "", delta(trade_change, money_m(abs(trade_change))),
@@ -268,9 +268,9 @@ kpis = [
 html('<div class="af-kpis">' + "".join(
     f'<div class="af-kpi"><div class="af-kpi-label">{label}</div>'
     f'<div class="af-kpi-value">{value}<small>{unit}</small></div>'
-    f'<div class="af-delta-row"><span class="af-delta {tone}">{text}</span><span class="af-vs">vs {prev_year}</span></div>'
-    f'{sparkline(series, i)}</div>'
-    for i, (label, value, unit, (tone, text), series) in enumerate(kpis)) + "</div>")
+    f'<div class="af-delta {tone}-text">{text}<span>vs {prev_year}</span></div>'
+    f'{sparkline(series)}</div>'
+    for label, value, unit, (tone, text), series in kpis) + "</div>")
 
 # ─────────────────────────── OUTLOOK ───────────────────────────
 if p_up >= 0.6:
@@ -280,15 +280,14 @@ elif p_up <= 0.4:
 else:
     fsi_text = "Too close to call"
 method = (f"RandomForest trained on <b>{n_outcomes}</b> year-to-year changes" if used_model
-          else f"History shows one outcome only; smoothed share of past rises ({n_outcomes} changes)")
+          else f"History shows one outcome only, so this is the smoothed share of past rises ({n_outcomes} changes)")
 trend_word = "rising" if slope > 0 else "falling" if slope < 0 else "flat"
 
 
 def projection_panel(year, mid, lo, hi):
     now = latest["Yield"]
-    tone = "good" if mid > now else "bad" if mid < now else "neutral"
-    arrow = {"good": "up", "bad": "down"}.get(tone, "flat")
     change = (mid - now) / now * 100 if now else 0
+    tone = "good" if change > 0 else "bad" if change < 0 else "neutral"
     d_lo, d_hi = min(lo, now), max(hi, now)
     pad = (d_hi - d_lo) * 0.08 or 1
     d_lo, d_hi = d_lo - pad, d_hi + pad
@@ -296,30 +295,26 @@ def projection_panel(year, mid, lo, hi):
     return f"""
     <div class="af-panel">
         <div class="af-panel-label">Yield projection<span class="af-tag">{year}</span></div>
-        <div class="af-panel-main"><span class="ic {tone}">{icon(arrow)}</span>
-            <div class="af-outlook-value">{mid:.2f}<small>MT/ha · {change:+.1f}%</small></div></div>
-        <div class="af-range">
-            <div class="af-range-track">
-                <span class="af-range-band" style="left:{pos(lo):.1f}%;width:{pos(hi) - pos(lo):.1f}%"></span>
-                <i class="af-range-now" style="left:{pos(now):.1f}%"></i>
-                <i class="af-range-mid" style="left:{pos(mid):.1f}%"></i>
-            </div>
-            <div class="af-range-legend"><span>range <b>{lo:.2f}–{hi:.2f}</b></span><span>now <b>{now:.2f}</b></span></div>
+        <div class="af-outlook-value">{mid:.2f} MT/ha<small class="{tone}-text">{change:+.1f}% vs now</small></div>
+        <div class="af-track">
+            <span class="band" style="left:{pos(lo):.1f}%;width:{pos(hi) - pos(lo):.1f}%"></span>
+            <i class="dot now" style="left:{pos(now):.1f}%"></i>
+            <i class="dot proj" style="left:{pos(mid):.1f}%"></i>
         </div>
-        <div class="af-panel-foot">Linear trend, {trend_word} <b>{slope:+.3f}</b> MT/ha per year.</div>
+        <div class="af-scale"><span>Range <b>{lo:.2f}–{hi:.2f}</b></span><span>Now <b>{now:.2f}</b></span></div>
+        <div class="af-panel-foot">Linear trend, {trend_word} {slope:+.3f} MT/ha per year.</div>
     </div>"""
 
 
 (y1, p1, lo1, hi1), (y3, p3, lo3, hi3) = projections
 html(f"""
-<div class="af-section"><b>Outlook</b><span>forecasts from the {start_year}–{year_val} records</span></div>
+<div class="af-section"><b>Outlook</b><span>Forecasts from the {start_year}–{year_val} records</span></div>
 <div class="af-outlook">
     <div class="af-panel">
         <div class="af-panel-label">Food security index<span class="af-tag">Next record</span></div>
-        <div class="af-panel-main">{ring(p_up)}
-            <div><div class="af-outlook-value">{fsi_text}</div>
-            <div class="af-panel-foot" style="margin-top:4px">chance the index rises from <b>{latest['FSI']:.0f}</b></div></div>
-        </div>
+        <div class="af-outlook-value">{fsi_text}</div>
+        <div class="af-track"><span class="fill" style="width:{p_up * 100:.0f}%"></span><i class="mid" style="left:50%"></i></div>
+        <div class="af-scale"><span>Decline</span><span><b>{p_up * 100:.0f}%</b> chance of a rise from {latest['FSI']:.0f}</span><span>Rise</span></div>
         <div class="af-panel-foot">{method}.</div>
     </div>
     {projection_panel(y1, p1, lo1, hi1)}
@@ -330,7 +325,7 @@ html(f"""
 # ─────────────────────────── ALERTS & INSIGHTS ───────────────────────────
 alerts = []
 if drought.lower() in ("critical", "extreme", "high"):
-    alerts.append(("bad", f"{drought} drought risk", "High",
+    alerts.append(("bad", f"{sentence(drought)} drought risk", "High",
                    "Prioritise drought-tolerant varieties and water-saving irrigation."))
 elif drought.lower() in ("moderate", "medium"):
     alerts.append(("warn", "Moderate drought risk", "Medium", "Monitor soil moisture and plan contingency irrigation."))
@@ -338,22 +333,22 @@ elif drought.lower() in ("moderate", "medium"):
 fsi_drop = data["FSI"].iloc[-1] - data["FSI"].iloc[-3 if len(data) >= 3 else -2]
 if fsi_drop < -5:
     alerts.append(("bad", "Food security index falling", "High",
-                   f"Down <b>{abs(fsi_drop):.0f} pts</b> over the last records. Policy support may be needed."))
+                   f"Down {abs(fsi_drop):.0f} pts over the last records. Policy support may be needed."))
 elif fsi_drop < 0:
     alerts.append(("warn", "Food security index under pressure", "Medium",
-                   f"Down <b>{abs(fsi_drop):.0f} pts</b> over the last records. Watch supply closely."))
+                   f"Down {abs(fsi_drop):.0f} pts over the last records. Watch supply closely."))
 if loss_rate > 15:
     alerts.append(("bad", "High post-harvest loss", "High",
-                   f"Average loss of <b>{loss_rate:.1f}%</b>. Invest in cold chain and storage."))
+                   f"Average loss of {loss_rate:.1f}%. Invest in cold chain and storage."))
 elif loss_rate > 8:
     alerts.append(("warn", "Elevated post-harvest loss", "Medium",
-                   f"Average loss of <b>{loss_rate:.1f}%</b>. Review storage and transport."))
+                   f"Average loss of {loss_rate:.1f}%. Review storage and transport."))
 if p_up >= 0.65:
     alerts.append(("good", "Positive food security outlook", "Info",
-                   f"<b>{p_up * 100:.0f}%</b> chance the index rises by the next record."))
+                   f"{p_up * 100:.0f}% chance the index rises by the next record."))
 elif p_up <= 0.35:
     alerts.append(("warn", "Negative food security outlook", "Medium",
-                   f"Only <b>{p_up * 100:.0f}%</b> chance the index rises by the next record."))
+                   f"Only {p_up * 100:.0f}% chance the index rises by the next record."))
 if not alerts:
     alerts.append(("good", "All indicators normal", "Info", "No critical risk factors detected."))
 
@@ -371,99 +366,97 @@ if tab["Overview"].open:
     with tab["Overview"]:
         left, right = st.columns([2, 1], gap="medium")
         with left:
-            with card("yield", "Yield trajectory", "MT per hectare · linear trend with a ±1 s.e. projection fan"):
+            with card("yield", "Yield trajectory", "MT per hectare, with linear trend and a ±1 s.e. projection range"):
                 charts.show(charts.yield_fan(data, slope, intercept, projections, t), "c-yield")
         with right:
-            with card("alerts", "Risk alerts", f"{len(alerts)} active · latest record {year_val}", delay=0.08):
+            with card("alerts", "Risk alerts", f"{len(alerts)} active for the latest record, {year_val}"):
                 html("".join(
-                    f'<div class="af-alert"><span class="ic {tone}">{icon("check" if tone == "good" else "alert")}</span>'
-                    f'<div><div class="af-alert-title">{title}<span class="af-sev {tone}">{sev}</span></div>'
+                    f'<div class="af-alert {tone}">{icon("check" if tone == "good" else "alert")}'
+                    f'<div><div class="af-alert-title">{title}<span>{sev}</span></div>'
                     f'<div class="af-alert-body">{body}</div></div></div>'
                     for tone, title, sev, body in alerts))
         left, right = st.columns([2, 1], gap="medium")
         with left:
-            with card("fsi", "Food security index", "Score out of 100 · shaded by status band", delay=0.12):
+            with card("fsi", "Food security index", "Score out of 100, shaded by status band"):
                 charts.show(charts.fsi_bands(data, t), "c-fsi")
         with right:
-            with card("insights", "Insights", f"{crop} in {country}, {start_year}–{year_val}", delay=0.18):
+            with card("z", f"How {year_val} compares", f"Latest record against the {start_year}–{year_val} average"):
+                charts.show(charts.latest_vs_history(data, t), "c-z")
+        left, right = st.columns([2, 1], gap="medium")
+        with left:
+            with card("bullets", "Farm operations benchmark",
+                      f"Bar: {country}'s average · tick: median country · shading: middle 50% and full range "
+                      f"of countries growing {crop.lower()}"):
+                charts.show(charts.bullets(crop_stats(crop), country, t), "c-bullets")
+        with right:
+            with card("insights", "Insights", f"{crop} in {country}, {start_year}–{year_val}"):
                 html(rows_html([
                     ("Latest yield vs average", f"{abs(yield_vs_avg):.1f}% {'above' if yield_vs_avg >= 0 else 'below'}"),
-                    ("Best year", f"{int(best['Year'])} <small>{best['Yield']:.2f} MT/ha</small>"),
-                    ("Weakest year", f"{int(worst['Year'])} <small>{worst['Yield']:.2f} MT/ha</small>"),
+                    ("Best year", f"{int(best['Year'])}<small>{best['Yield']:.2f} MT/ha</small>"),
+                    ("Weakest year", f"{int(worst['Year'])}<small>{worst['Yield']:.2f} MT/ha</small>"),
                     ("Rainfall–yield link", correlation_label(rain_r)
-                     + (f" <small>r = {rain_r:.2f}</small>" if np.isfinite(rain_r) else "")),
+                     + (f"<small>r = {rain_r:.2f}</small>" if np.isfinite(rain_r) else "")),
                     ("Average profit margin", f"{profit_margin:.1f}%"),
-                    ("Records analysed", f"{len(data)} <small>{start_year}–{year_val}</small>"),
+                    ("Average post-harvest loss", f"{loss_rate:.1f}%"),
+                    ("Records analysed", f"{len(data)}<small>{start_year}–{year_val}</small>"),
                 ]))
-        meters = [
-            ("Mechanization", latest["Mechanization"], "%", "Share of farm work mechanized", latest["Mechanization"]),
-            ("Irrigation", latest["Irrigation"], "%", "Share of area irrigated", latest["Irrigation"]),
-            ("Soil health", latest["SoilHealth"], "/100", "Composite soil score", latest["SoilHealth"]),
-            ("Post-harvest loss", latest["LossRate"], "%", "Lower is better", min(latest["LossRate"] * 2.5, 100)),
-        ]
-        with card("ops", "Farm operations", f"Latest record, {year_val}", delay=0.22):
-            html('<div class="af-meters">' + "".join(
-                f'<div class="af-meter"><div class="af-meter-top"><span class="af-meter-label">{label}</span>'
-                f'<span class="af-meter-value">{value:.0f}<small>{unit}</small></span></div>'
-                f'<div class="af-bar"><span style="width:{width:.0f}%"></span></div>'
-                f'<div class="af-meter-note">{note}</div></div>'
-                for label, value, unit, note, width in meters) + "</div>")
 
 if tab["Climate"].open:
     with tab["Climate"]:
         c1, c2 = st.columns(2, gap="medium")
         with c1:
-            with card("d-rain", "Rainfall anomaly", f"mm above or below the {start_year}–{year_val} average"):
+            with card("rain", "Rainfall anomaly", f"mm above or below the {start_year}–{year_val} average"):
                 charts.show(charts.rainfall_anomaly(data, t), "c-rain")
         with c2:
-            with card("temp", "Average temperature", "°C, with the period average", delay=0.08):
+            with card("temp", "Average temperature", "°C, with the period average"):
                 charts.show(charts.temperature(data, t), "c-temp")
         c1, c2 = st.columns(2, gap="medium")
         with c1:
             with card("scatter", "Rainfall vs yield",
-                      "Each point is one year" + (f" · r = {rain_r:.2f}" if np.isfinite(rain_r) else ""), delay=0.12):
+                      "Each point is one year" + (f" · r = {rain_r:.2f}" if np.isfinite(rain_r) else "")):
                 charts.show(charts.rain_vs_yield(data, rain_r, t), "c-rainyield")
         with c2:
-            with card("corr", f"What moves {crop.lower()} numbers", "Correlation across every country and year",
-                      delay=0.18):
+            with card("corr", "Driver correlations", f"Pearson r across every country and year for {crop.lower()}"):
                 charts.show(charts.correlation_matrix(crop_rows(crop), t), f"c-corr-{mode}")
-        profile = [("Drought risk", drought)]
-        for col, label in [("climate_zone", "Climate zone"), ("climate_vulnerability", "Vulnerability"),
-                           ("flood_risk_score", "Flood risk"), ("drought_freq_per10yr", "Droughts / decade")]:
+        profile = [("Drought risk", sentence(drought))]
+        for col, label in [("climate_zone", "Climate zone"), ("climate_vulnerability", "Vulnerability score"),
+                           ("flood_risk_score", "Flood risk score"), ("drought_freq_per10yr", "Droughts per decade")]:
             if col in latest.index:
                 profile.append((label, latest[col]))
-        profile.append(("Avg rainfall", f"{data['Rainfall'].mean():,.0f} mm"))
-        with card("profile", "Climate profile", f"Latest record, {year_val}", delay=0.22):
+        profile.append(("Average rainfall", f"{data['Rainfall'].mean():,.0f} mm"))
+        with card("profile", "Climate profile", f"Latest record, {year_val}"):
             html('<div class="af-stats">' + "".join(
                 f'<div class="af-stat"><div class="k">{k}</div><div class="v">{v}</div></div>' for k, v in profile)
                  + "</div>")
 
 if tab["Economics"].open:
     with tab["Economics"]:
+        with card("indexed", "Indexed trends", f"Each series relative to its {start_year} value"):
+            charts.show(charts.indexed_trends(data, t), "c-indexed")
         c1, c2 = st.columns(2, gap="medium")
         with c1:
             with card("prod", "Production", "Metric tonnes per year"):
                 charts.show(charts.style(go.Figure(charts.bars(years, data["Production"], "Production", t["c_a"], "MT")),
                                          t, years=years), "c-prod")
         with c2:
-            with card("price", "Price", "USD per metric tonne", delay=0.08):
+            with card("price", "Price", "USD per metric tonne"):
                 charts.show(charts.style(go.Figure(charts.area(years, data["Price"], "Price", t["c_a"], t, "USD/MT")),
                                          t, years=years), "c-price")
         c1, c2 = st.columns(2, gap="medium")
         with c1:
-            with card("d-margin", "Profit margin", "Percent of revenue", delay=0.12):
+            with card("margin", "Profit margin", "Percent of revenue"):
                 fig = charts.signed_bars(years, data["ProfitMargin"], t, "Profit", "Loss", "%", ".1f")
                 charts.show(charts.style(fig, t, legend=True, years=years, zero_line=True), "c-margin")
         with c2:
-            with card("d-trade", "Trade balance", "Exports minus imports, USD millions", delay=0.18):
+            with card("trade", "Trade balance", "Exports minus imports, USD millions"):
                 fig = charts.signed_bars(years, data["TradeBalance"], t, "Surplus", "Deficit", "USD M")
                 charts.show(charts.style(fig, t, legend=True, years=years, zero_line=True), "c-trade")
         c1, c2 = st.columns(2, gap="medium")
         with c1:
-            with card("d-waterfall", "Trade flows", f"Exports, imports and the net balance in {year_val}", delay=0.22):
+            with card("waterfall", "Trade flows", f"Exports, imports and the net balance in {year_val}"):
                 charts.show(charts.trade_waterfall(latest, t), "c-waterfall")
         with c2:
-            with card("sankey", "Where the harvest goes", f"Production losses along the chain, {year_val}", delay=0.26):
+            with card("sankey", "Where the harvest goes", f"Losses along the supply chain, {year_val}"):
                 charts.show(charts.harvest_sankey(latest, t), "c-sankey")
 
 if tab["Benchmark"].open:
@@ -481,13 +474,16 @@ if tab["Benchmark"].open:
 
         left, right = st.columns([2, 1], gap="medium")
         with left:
-            with card("map", f"{crop} around the world",
-                      f"{label} · country averages, all years · {len(stats)} countries"):
+            with card("map", f"{crop} by country", f"{label}, country averages over all years · {len(stats)} countries"):
                 charts.show(charts.world_map(stats, col, label, fmt, country, t), "c-map")
         with right:
-            with card("h-rank", f"Top countries by {metric.lower()}",
-                      f"{country} ranks #{rank} of {len(stats)}" if rank else "", delay=0.08):
+            with card("rank", f"Top countries by {metric.lower()}",
+                      f"{country} ranks {rank} of {len(stats)}" if rank else ""):
                 charts.show(charts.ranking(stats, col, fmt, country, t), "c-rank")
+
+        with card("dist", f"{country} within the global distribution",
+                  f"{crop} yield each year against the spread of all {len(stats)} countries"):
+            charts.show(charts.distribution_bands(crop_rows(crop), country, t), "c-dist")
 
         peer_key = f"c-peer-{crop}-{country}"
 
@@ -499,7 +495,7 @@ if tab["Benchmark"].open:
             custom = points[0].get("customdata")
             target = custom[0] if custom else None
             if target is None:
-                groups = [g for _, g in stats.groupby(stats["Country"] == country)]
+                groups = charts._two_groups(stats, country)
                 idx = points[0].get("point_index", points[0].get("point_number"))
                 curve = points[0].get("curve_number", 0)
                 if idx is not None and curve < len(groups):
@@ -507,32 +503,35 @@ if tab["Benchmark"].open:
             if target in catalog and crop in catalog[target]:
                 st.session_state.country = target
 
-        left, right = st.columns([3, 2], gap="medium")
+        left, right = st.columns(2, gap="medium")
         with left:
-            with card("peer", "Peer landscape", "Bubble size is production · click a bubble to open that country",
-                      delay=0.12):
+            with card("peer", "Yield and food security", "Bubble size is production · select a bubble to open that country"):
                 charts.show(charts.peer_scatter(stats, country, t), peer_key, on_select=jump_to_country,
                             selection_mode="points")
         with right:
-            with card("radar", f"{country} vs the world", f"Percentile rank among countries growing {crop.lower()}",
-                      delay=0.18):
-                charts.show(charts.radar([(country, percentiles(stats, country), t["c_a"])], t), "c-radar")
-        with card("gap", f"{crop}, year by year", "Rainfall vs yield for every country · press play", delay=0.22):
-            charts.show(charts.gapminder(crop_rows(crop), country, t), f"c-gap-{crop}-{country}-{mode}")
+            with card("stability", "Yield and stability", "Average yield against year-to-year volatility"):
+                charts.show(charts.stability(stats, country, t), "c-stability")
+        with card("pct", "Percentile profile", f"Where {country} ranks among countries growing {crop.lower()}"):
+            charts.show(charts.percentile_dots([(country, percentiles(stats, country), t["c_a"], "circle")], t),
+                        "c-pct")
 
 if tab["Portfolio"].open:
     with tab["Portfolio"]:
         crow = country_rows(country)
         left, right = st.columns([2, 1], gap="medium")
         with left:
-            with card("heat", f"{country}'s crop portfolio", "Yield each year as % of that crop's own average"):
+            with card("heat", f"{country} crop portfolio", "Yield each year as a percentage of that crop's average"):
                 charts.show(charts.portfolio_heatmap(crow, crop, t), f"c-heat-{mode}")
         with right:
-            with card("d-trends", "Yield momentum", "Linear trend in yield, % per year", delay=0.08):
+            with card("trends", "Yield momentum", "Linear trend in yield, percent per year"):
                 charts.show(charts.crop_trends(crow, crops, crop, t), "c-trends")
-        with card("tree", "Production mix", "Tile size is average production · colour is average profit margin",
-                  delay=0.14):
-            charts.show(charts.portfolio_treemap(crow, t), f"c-tree-{mode}")
+        left, right = st.columns(2, gap="medium")
+        with left:
+            with card("tree", "Production mix", "Tile size is average production · colour is average profit margin"):
+                charts.show(charts.portfolio_treemap(crow, t), f"c-tree-{mode}")
+        with right:
+            with card("pareto", "Production concentration", "Share of average production by crop, with the cumulative total"):
+                charts.show(charts.production_pareto(crow, crop, t), "c-pareto")
 
 if tab["Compare"].open:
     with tab["Compare"]:
@@ -552,18 +551,17 @@ if tab["Compare"].open:
             else:
                 left, right = st.columns([3, 2], gap="medium")
                 with left:
-                    with card("cmp", f"Yield: {crop} vs {pick}", "MT per hectare"):
+                    with card("cmp", f"Yield: {crop} and {pick}", "MT per hectare"):
                         fig = go.Figure([charts.line(years, data["Yield"], crop, t["c_a"], t, "MT/ha"),
                                          charts.line(data_b["Year"], data_b["Yield"], pick, t["c_b"], t, "MT/ha",
                                                      symbol="square")])
                         span = np.array([min(years.min(), data_b["Year"].min()), year_val])
-                        charts.show(charts.style(fig, t, height=330, legend=True, years=span), "c-cmp")
+                        charts.show(charts.style(fig, t, height=350, legend=True, years=span), "c-cmp")
                 with right:
-                    with card("cmp-radar", "Percentile profile", "Each crop against countries growing that crop",
-                              delay=0.08):
-                        charts.show(charts.radar([(crop, percentiles(crop_stats(crop), country), t["c_a"]),
-                                                  (pick, percentiles(crop_stats(pick), country), t["c_b"])], t),
-                                    "c-cmp-radar")
+                    with card("cmp-pct", "Percentile profile", "Each crop against countries growing that crop"):
+                        charts.show(charts.percentile_dots(
+                            [(crop, percentiles(crop_stats(crop), country), t["c_a"], "circle"),
+                             (pick, percentiles(crop_stats(pick), country), t["c_b"], "square")], t), "c-cmp-pct")
                 lat_b = data_b.iloc[-1]
                 slope_b = np.polyfit(data_b["Year"], data_b["Yield"], 1)[0]
                 rows = [
@@ -575,7 +573,7 @@ if tab["Compare"].open:
                     ("Profit margin, average", f"{profit_margin:.1f}%", f"{data_b['ProfitMargin'].mean():.1f}%"),
                     ("Post-harvest loss, average", f"{loss_rate:.1f}%", f"{data_b['LossRate'].mean():.1f}%"),
                 ]
-                with card("cmp-table", "Side by side", f"{start_year}–{year_val}", delay=0.14):
+                with card("cmp-table", "Side by side", f"{start_year}–{year_val}"):
                     html(f"""
                     <div class="af-table-wrap"><table class="af-table">
                         <thead><tr><th>Metric</th>
@@ -592,8 +590,8 @@ if tab["Data"].open:
                    ("Rainfall", "Rain mm", "{:,.0f}"), ("Temperature", "Temp °C", "{:.1f}"),
                    ("Price", "Price USD/MT", "{:,.0f}"), ("TradeBalance", "Trade USD M", "{:,.0f}"),
                    ("ProfitMargin", "Margin %", "{:.1f}"), ("LossRate", "Loss %", "{:.1f}"),
-                   ("Irrigation", "Irrig. %", "{:.0f}"), ("Mechanization", "Mech. %", "{:.0f}"),
-                   ("SoilHealth", "Soil", "{:.0f}")]
+                   ("Irrigation", "Irrigation %", "{:.0f}"), ("Mechanization", "Mechanization %", "{:.0f}"),
+                   ("SoilHealth", "Soil health", "{:.0f}")]
         body = "".join("<tr>" + "".join(f"<td>{fmt.format(row[c])}</td>" for c, _, fmt in columns) + "</tr>"
                        for _, row in data.iloc[::-1].iterrows())
         with card("data", f"{len(data)} records", f"{crop} in {country}, newest first"):
@@ -607,7 +605,7 @@ if tab["Data"].open:
 # ─────────────────────────── FOOTER ───────────────────────────
 html(f"""
 <div class="af-footer">
-    <span>AgriFlow AI · crop &amp; food security analytics</span>
+    <span>AgriFlow AI · Crop and food security analytics</span>
     <span>RandomForest outlook · linear yield trend · {datetime.date.today().strftime("%d %b %Y")}</span>
 </div>
 """)
