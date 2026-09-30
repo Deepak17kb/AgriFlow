@@ -442,7 +442,7 @@ def distribution_bands(crop_df, country, t):
     own = crop_df[crop_df["Country"] == country].sort_values("Year")
     years = q.index
     fig = go.Figure()
-    for low, high, name, alpha in [(0.1, 0.9, "Middle 80% of countries", 0.10), (0.25, 0.75, "Middle 50%", 0.20)]:
+    for low, high, name, alpha in [(0.1, 0.9, "Middle 80%", 0.10), (0.25, 0.75, "Middle 50%", 0.20)]:
         fig.add_scatter(x=years, y=q[low], mode="lines", line=dict(width=0), hoverinfo="skip", showlegend=False)
         fig.add_scatter(x=years, y=q[high], mode="lines", line=dict(width=0), fill="tonexty",
                         fillcolor=rgba(t["c_b"], alpha), name=name, hoverinfo="skip")

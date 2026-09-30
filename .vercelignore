@@ -5,3 +5,4 @@ requirements.txt
 data.csv
 .streamlit/
 __pycache__/
+docs/
